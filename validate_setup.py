@@ -98,15 +98,26 @@ def main():
         print(WARN, f"{exc} — cache will fall back to {tempfile.gettempdir()}")
 
     print("[6/6] CLI smoke test...")
-    cli = os.path.join(REPO, skill, "scripts", "cli.py")
+    # Skills may rename the entry script (skeleton default cli.py; e.g.
+    # monarch uses fetch.py) — probe the known candidates.
+    cli = None
+    for cand in ("cli.py", "fetch.py"):
+        p = os.path.join(REPO, skill, "scripts", cand)
+        if os.path.exists(p):
+            cli = p
+            break
+    if cli is None:
+        print(FAIL, "no CLI entry script (scripts/cli.py or scripts/fetch.py)")
+        return 1
     tmp_db = os.path.join(tempfile.gettempdir(), "skill_validate.db")
+    cli_name = os.path.basename(cli)
     for cmd in ("version", "status"):
         r = subprocess.run([sys.executable, cli, cmd, "--db", tmp_db],
                            capture_output=True, text=True, timeout=60)
         if r.returncode == 0:
-            print(PASS, f"cli.py {cmd}")
+            print(PASS, f"{cli_name} {cmd}")
         else:
-            print(FAIL, f"cli.py {cmd} -> exit {r.returncode}: {r.stderr.strip()[:200]}")
+            print(FAIL, f"{cli_name} {cmd} -> exit {r.returncode}: {r.stderr.strip()[:200]}")
             failures += 1
 
     print()
