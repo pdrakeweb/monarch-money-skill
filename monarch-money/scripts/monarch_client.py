@@ -42,7 +42,11 @@ class NetworkError(MonarchSkillError):
 
 
 class BlockedEndpointError(MonarchSkillError):
-    """A destructive Monarch endpoint was called. The skill is read-only."""
+    """An account-lifecycle endpoint was called. These are never allowed."""
+
+
+class ConfirmationRequiredError(MonarchSkillError):
+    """A write endpoint was called without explicit user confirmation."""
 
 
 # --------------------------------------------------------------------------- #
@@ -523,14 +527,23 @@ def apply_cookie_auth(mm, csrftoken, sessionid):
     return mm
 
 
-# Destructive / mutating Monarch endpoints. The skill is strictly read-only:
-# these are blocked at the client layer so no code path (or confused model)
-# can create, modify, or delete anything in the user's Monarch account.
-BLOCKED_METHODS = frozenset({
-    # account lifecycle — explicitly blocked
+# Two-tier write policy, enforced in code AND mirrored in SKILL.md:
+#
+# FORBIDDEN_METHODS — account lifecycle. Never callable, no override exists.
+# CONFIRM_METHODS   — all other write endpoints. Callable ONLY inside a
+#                     `with client.mm.allow("<method>"):` block, which Claude
+#                     may open only after the user explicitly confirmed that
+#                     specific action in the conversation.
+FORBIDDEN_METHODS = frozenset({
     "create_manual_account",
     "delete_account",
+})
+
+CONFIRM_METHODS = frozenset({
+    # accounts (non-lifecycle)
     "update_account",
+    "request_accounts_refresh",
+    "request_accounts_refresh_and_wait",
     # transactions
     "create_transaction",
     "delete_transaction",
@@ -553,38 +566,85 @@ BLOCKED_METHODS = frozenset({
 })
 
 
-class ReadOnlyMonarch:
-    """Proxy around MonarchMoney that refuses destructive endpoints.
+class _Armed:
+    """Context manager that arms exactly one confirmed write method."""
 
-    Read methods and internal attributes (_headers, token, save_session, …)
-    pass through untouched; anything in BLOCKED_METHODS raises
-    BlockedEndpointError before the underlying method is even looked up, so
-    no request is ever constructed.
+    def __init__(self, guard, name):
+        self._guard = guard
+        self._name = name
+
+    def __enter__(self):
+        self._guard._armed.add(self._name)
+        return self._guard
+
+    def __exit__(self, *exc):
+        self._guard._armed.discard(self._name)
+        return False
+
+
+class GuardedMonarch:
+    """Proxy around MonarchMoney enforcing the write policy.
+
+    Reads and internal attributes (_headers, token, save_session, …) pass
+    through untouched. FORBIDDEN_METHODS raise BlockedEndpointError at
+    attribute lookup — before any request exists — and cannot be armed.
+    CONFIRM_METHODS raise ConfirmationRequiredError unless called inside
+    `with guard.allow("<method>"):`, which represents the user's explicit,
+    per-action confirmation in the conversation.
     """
 
     def __init__(self, mm):
         self._mm = mm
+        self._armed = set()
+
+    def allow(self, name):
+        """Arm one user-confirmed write method for the duration of a
+        with-block. Only call this AFTER the user explicitly confirmed the
+        specific action in chat."""
+        if name in FORBIDDEN_METHODS:
+            raise BlockedEndpointError(
+                f"Monarch endpoint '{name}' can never be armed: account "
+                "create/delete is permanently blocked. The user must do this "
+                "in the Monarch app directly."
+            )
+        if name not in CONFIRM_METHODS:
+            raise ValueError(
+                f"'{name}' is not a gated write method; call it directly."
+            )
+        return _Armed(self, name)
 
     def __getattr__(self, name):
-        if name in BLOCKED_METHODS:
+        if name in FORBIDDEN_METHODS:
             raise BlockedEndpointError(
                 f"Monarch endpoint '{name}' is blocked: the monarch-money "
-                "skill is read-only and never creates, modifies, or deletes "
-                "accounts or data. Make changes in the Monarch app directly."
+                "skill never creates or deletes accounts. The user must do "
+                "this in the Monarch app directly."
+            )
+        if name in CONFIRM_METHODS and name not in self._armed:
+            raise ConfirmationRequiredError(
+                f"Monarch endpoint '{name}' modifies the user's data. Get the "
+                "user's explicit confirmation of this specific action in the "
+                "conversation first, then wrap the call: "
+                f"with client.mm.allow('{name}'): client.mm.{name}(...)"
             )
         return getattr(self._mm, name)
+
+
+# Backwards-compatible alias (pre-write-policy name).
+ReadOnlyMonarch = GuardedMonarch
 
 
 class MonarchClient:
     """Wraps a logged-in MonarchMoney instance plus the cache.
 
-    The instance is always wrapped in ReadOnlyMonarch — destructive endpoints
-    raise BlockedEndpointError no matter how the client was constructed.
+    The instance is always wrapped in GuardedMonarch — account lifecycle is
+    never callable and all other writes require per-action arming, no matter
+    how the client was constructed.
     """
 
     def __init__(self, mm_instance, cache):
-        if not isinstance(mm_instance, ReadOnlyMonarch):
-            mm_instance = ReadOnlyMonarch(mm_instance)
+        if not isinstance(mm_instance, GuardedMonarch):
+            mm_instance = GuardedMonarch(mm_instance)
         self.mm = mm_instance
         self.cache = cache
 

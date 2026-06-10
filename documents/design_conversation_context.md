@@ -26,6 +26,20 @@ must state trade-offs before the user sends secrets: A/B put the password in
 chat history (suggest rotation after); TOTP codes expire in ~30s so the login
 must run immediately; C avoids both.
 
+## Write policy (decided 2026-06)
+
+Not read-only: a write-capable client with a two-tier guard. Account lifecycle
+(create_manual_account, delete_account) is forbidden outright — blocked by
+instructions AND by the GuardedMonarch proxy, no override. Every other write
+API requires Claude to verify the specific action with the user in chat, and
+the proxy independently requires per-method arming via
+`with client.mm.allow("<method>"):` (one-shot, with-block scoped). Double
+layer on purpose: instructions create the confirmation UX, code makes skipping
+it impossible.
+
+Option C clarification: bearer tokens are still mintable via the login API
+(short script reading mm.token after login()) — only browser extraction died.
+
 Field lessons (2026-06, second round):
 - The Monarch web app no longer exposes a bearer token to the browser — auth
   is cookie-only (csrftoken + sessionid). Token extraction instructions were

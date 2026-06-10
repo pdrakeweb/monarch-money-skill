@@ -107,18 +107,27 @@ python scripts/setup_auth.py --email you@example.com \
 
 Revocation: delete `data/credentials.json` and rotate the Monarch password.
 
-### Option C — bearer token (only if the user already has one)
+### Option C — bearer token
 
-`setup_auth.py --token THEIR_TOKEN` adopts an existing API bearer token,
-validates it with one lightweight call, and saves `data/session.pickle`.
+`setup_auth.py --token THEIR_TOKEN` adopts an API bearer token, validates it
+with one lightweight call, and saves `data/session.pickle`.
 
 ⚠ **Do NOT send the user into the browser to find a token.** As of mid-2026
 the Monarch web app no longer uses bearer tokens — it authenticates with
 session cookies only, so there is no `Authorization: Token …` header in the
 Network tab and no token in localStorage. Browser extraction is Option D
-(cookies), not this. Option C exists only for a token obtained elsewhere
-(e.g. saved from a previous integration or another API tool). If the user
-doesn't already have one, use Option D or Option A.
+(cookies), not this.
+
+Tokens are still mintable, though: the login API itself returns one. If the
+user wants a bearer token (e.g. for portability to other tools), you can run a
+short Python script HERE in the container that calls the library's
+`login(email, password, mfa_secret_key=...)` and reads `mm.token` — that
+requires their credentials, so it carries the same caveats as Option A
+(confirm first, run immediately, suggest rotating after; note rotation does
+not invalidate the session/token). Never print the token to stdout — write it
+to a file under `data/` or pass it straight to `setup_auth.py --token`.
+Otherwise, Option C is for a token the user already has from a previous
+integration or another tool.
 
 ## 3. Command reference
 
@@ -225,12 +234,21 @@ temp-dir copy (analysis still works; it just won't persist).
 
 ## 8. Notes for analysis
 
-- **The skill is strictly read-only.** Destructive Monarch endpoints (account
-  create/delete/update, transaction edits, budget writes, uploads) are blocked
-  in code at the client layer and raise `BlockedEndpointError`. Never attempt
-  them — if the user asks to change something in Monarch, direct them to the
-  Monarch app. Correcting the local `account_tax_buckets` table (§5) is fine:
-  that's the skill's own cache, not Monarch.
+- **Write policy (enforced in code AND by these instructions):**
+  - **Account create/delete is permanently blocked.** `create_manual_account`
+    and `delete_account` raise `BlockedEndpointError`; there is no override.
+    If the user wants this, direct them to the Monarch app.
+  - **Every other write endpoint requires explicit user confirmation.** Before
+    calling anything that modifies Monarch data (`update_transaction`,
+    `set_budget_amount`, `reset_budget`, tags, splits, uploads, …): state
+    exactly what will change, ask the user to confirm THAT specific action,
+    and only after a clear yes wrap the call:
+    `with client.mm.allow('set_budget_amount'): client.mm.set_budget_amount(...)`.
+    Unarmed calls raise `ConfirmationRequiredError` — the gate exists in code,
+    so skipping the question doesn't work. Never arm a method the user didn't
+    just confirm; never arm more than the one method needed.
+  - Correcting the local `account_tax_buckets` table (§5) needs no
+    confirmation: that's the skill's own cache, not Monarch.
 - The user is finance-sophisticated — skip 101-level explanations; lead with the
   number and the non-obvious caveat.
 - Amounts: positive = inflow/income, negative = outflow/expense.

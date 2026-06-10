@@ -7,11 +7,14 @@ pins `gql==4.0`; do not override.
 Authentication is a saved-session pickle (`mm.load_session(path)`); see
 `setup_auth.py`. `fetch.py` only ever calls the **read** methods below.
 
-**Write endpoints are blocked, not merely unused.** `MonarchClient` wraps the
-library in a `ReadOnlyMonarch` proxy: account create/delete/update, transaction
-mutations, budget writes, `update_reoccuring`, and uploads all raise
-`BlockedEndpointError` at attribute access. Do not try to call them through
-`client.mm` — it cannot work, by design.
+**Write endpoints are gated in code.** `MonarchClient` wraps the library in a
+`GuardedMonarch` proxy with two tiers:
+- `create_manual_account` / `delete_account` → `BlockedEndpointError`, always.
+  Cannot be armed; account lifecycle happens in the Monarch app only.
+- Every other write (transaction mutations, budget writes, tags, splits,
+  uploads, `update_account`, refresh requests) → `ConfirmationRequiredError`
+  unless wrapped in `with client.mm.allow('<method>'):`. Open that block only
+  after the user explicitly confirmed the specific action in chat.
 
 ---
 

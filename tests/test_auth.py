@@ -170,7 +170,7 @@ def test_option_d_requires_both_cookies(capsys):
         setup_auth.main(["--csrf-token", "only_one"])
 
 
-def test_blocked_account_create_delete(tmp_path):
+def test_forbidden_account_create_delete(tmp_path):
     from monarch_client import MonarchClient, MonarchCache, BlockedEndpointError
     inner = MagicMock()
     client = MonarchClient(inner, MonarchCache(":memory:"))
@@ -185,14 +185,61 @@ def test_blocked_account_create_delete(tmp_path):
         client.cache.close()
 
 
-def test_blocked_other_destructive_endpoints():
+def test_forbidden_cannot_be_armed():
     from monarch_client import MonarchClient, MonarchCache, BlockedEndpointError
+    client = MonarchClient(MagicMock(), MonarchCache(":memory:"))
+    try:
+        with pytest.raises(BlockedEndpointError):
+            with client.mm.allow("delete_account"):
+                pass
+        with pytest.raises(BlockedEndpointError):
+            with client.mm.allow("create_manual_account"):
+                pass
+    finally:
+        client.cache.close()
+
+
+def test_mutations_require_confirmation():
+    from monarch_client import (
+        MonarchClient, MonarchCache, ConfirmationRequiredError,
+    )
     client = MonarchClient(MagicMock(), MonarchCache(":memory:"))
     try:
         for name in ("delete_transaction", "create_transaction",
                      "update_account", "reset_budget", "set_budget_amount"):
-            with pytest.raises(BlockedEndpointError):
+            with pytest.raises(ConfirmationRequiredError):
                 getattr(client.mm, name)
+    finally:
+        client.cache.close()
+
+
+def test_armed_mutation_passes_through_once():
+    from monarch_client import (
+        MonarchClient, MonarchCache, ConfirmationRequiredError,
+    )
+    inner = MagicMock()
+    client = MonarchClient(inner, MonarchCache(":memory:"))
+    try:
+        with client.mm.allow("reset_budget"):
+            client.mm.reset_budget("budget_1")
+        inner.reset_budget.assert_called_once_with("budget_1")
+        # Arming is scoped to the with-block — gone afterwards.
+        with pytest.raises(ConfirmationRequiredError):
+            client.mm.reset_budget
+        # Arming one method does not arm another.
+        with client.mm.allow("set_budget_amount"):
+            with pytest.raises(ConfirmationRequiredError):
+                client.mm.delete_transaction
+    finally:
+        client.cache.close()
+
+
+def test_allow_rejects_read_methods():
+    from monarch_client import MonarchClient, MonarchCache
+    client = MonarchClient(MagicMock(), MonarchCache(":memory:"))
+    try:
+        with pytest.raises(ValueError):
+            client.mm.allow("get_accounts")
     finally:
         client.cache.close()
 

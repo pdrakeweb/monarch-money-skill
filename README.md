@@ -49,16 +49,19 @@ The values are validated with one API call and saved to
 `data/cookie_session.json` (git-ignored). They expire with the browser session
 (typically weeks) — just re-copy when that happens.
 
-### Option C — bearer token (only if you already have one)
+### Option C — bearer token
 
 `python monarch-money/scripts/setup_auth.py --token YOUR_TOKEN` adopts an
-existing API bearer token.
+API bearer token.
 
 **Note (mid-2026):** the Monarch web app no longer uses bearer tokens — it
 authenticates with session cookies only, so you can't extract a token from the
 browser anymore (no `Authorization: Token …` header, nothing in localStorage).
-Use Option D for browser-based setup; Option C is only for a token you saved
-from a previous integration or another API tool.
+Tokens are still mintable via the login API, though: a short Python script
+calling the library's `login()` and reading `mm.token` produces one (Claude
+can run it in-session — it needs your credentials, so the Option A caveats
+apply). Or use a token you saved from a previous integration or another tool.
+For browser-based no-password setup, use Option D.
 
 ### Option A — email + password + TOTP code
 
@@ -123,14 +126,24 @@ For `--mfa-code` you supply a current 6-digit TOTP code. For Option B's
 > — Monarch then shows the Base32 secret string. That string is your
 > `--mfa-secret-key`.
 
-## Read-only by design
+## Write policy: two tiers, enforced in code
 
-The skill never writes to your Monarch account. Destructive endpoints —
-`create_manual_account`, `delete_account`, `update_account`, transaction
-create/update/delete, budget writes, uploads — are **blocked in code** at the
-client layer (`ReadOnlyMonarch` proxy raises `BlockedEndpointError` before any
-request is constructed), not just by convention. The only thing the skill ever
-modifies is its own local SQLite cache.
+The client layer (`GuardedMonarch` proxy) enforces a write policy that the
+skill's instructions mirror — so both the model's instructions *and* the code
+have to agree before anything changes in your Monarch account:
+
+- **Account lifecycle is permanently blocked.** `create_manual_account` and
+  `delete_account` raise `BlockedEndpointError` at attribute access. No
+  override exists; those actions can only be done in the Monarch app.
+- **All other write endpoints require per-action confirmation.** Transaction
+  edits, budget writes (`set_budget_amount`, `reset_budget`), tags, splits,
+  uploads, etc. raise `ConfirmationRequiredError` unless the call is wrapped
+  in `with client.mm.allow('<method>'):` — and the skill instructs Claude to
+  open that block only after you explicitly confirm the specific action in
+  chat. Arming is one method at a time, scoped to the with-block.
+
+Reads are unrestricted. The only thing the skill modifies without asking is
+its own local SQLite cache.
 
 ## Known limitations
 

@@ -121,17 +121,29 @@ id TEXT PK, merchant, amount REAL, frequency, next_date TEXT, account_id, fetche
 key TEXT PK, value TEXT
 Keys: last_full_sync, last_tx_sync, schema_version, api_call_count
 
-## Read-Only Enforcement
+## Write Policy Enforcement
 
-The skill must never mutate the user's Monarch account. Enforced in code, not
-convention: MonarchClient always wraps the library instance in a
-ReadOnlyMonarch proxy whose __getattr__ raises BlockedEndpointError (a
-MonarchSkillError) for any name in BLOCKED_METHODS — account lifecycle
-(create_manual_account, delete_account, update_account), transaction mutations,
-budget writes, recurring updates, and uploads. The block fires at attribute
-lookup, before any request object exists. Read methods and internal attributes
-(_headers, token, save_session) pass through. The only state the skill ever
-writes is its own SQLite cache and session files under data/.
+Two tiers, enforced in code (GuardedMonarch proxy) and mirrored verbatim in
+SKILL.md so instructions and code agree:
+
+1. FORBIDDEN_METHODS — account lifecycle (create_manual_account,
+   delete_account). Raise BlockedEndpointError at attribute lookup, before any
+   request object exists. allow() refuses to arm them; no override exists.
+2. CONFIRM_METHODS — every other write endpoint (update_account, transaction
+   mutations, budget writes incl. reset_budget/set_budget_amount, recurring
+   updates, uploads, account refresh requests). Raise
+   ConfirmationRequiredError unless called inside
+   `with client.mm.allow("<method>"):` — a one-shot, per-method arming that
+   SKILL.md permits ONLY after the user explicitly confirmed that specific
+   action in the conversation. Arming is scoped to the with-block and does not
+   extend to other methods.
+
+Rationale for the double layer: instructions alone can be ignored by a
+confused model; code alone gives no UX for legitimate writes. Together, the
+instructions produce the confirmation conversation and the code makes skipping
+it impossible. Reads and internals (_headers, token, save_session) pass
+through. MonarchClient.__init__ always wraps, so every construction path
+(token session, cookie session, credentials) is covered.
 
 ## Error Classes
 
