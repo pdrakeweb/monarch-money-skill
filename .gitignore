@@ -1,0 +1,8 @@
+monarch-money/data/
+*.pickle
+*.db
+credentials.json
+*.zip
+__pycache__/
+*.pyc
+.venv/

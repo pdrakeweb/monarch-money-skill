@@ -1,0 +1,75 @@
+{
+  "period": "2026-06",
+  "categories": [
+    {
+      "categoryId": "c_groc",
+      "category": "Groceries",
+      "categoryGroup": "Food & Drink",
+      "budgeted": 600.0,
+      "actual": 540.0
+    },
+    {
+      "categoryId": "c_dine",
+      "category": "Dining",
+      "categoryGroup": "Food & Drink",
+      "budgeted": 200.0,
+      "actual": 287.0
+    },
+    {
+      "categoryId": "c_trans",
+      "category": "Transportation",
+      "categoryGroup": "Transportation",
+      "budgeted": 250.0,
+      "actual": 180.0
+    },
+    {
+      "categoryId": "c_util",
+      "category": "Utilities",
+      "categoryGroup": "Bills & Utilities",
+      "budgeted": 300.0,
+      "actual": 345.0
+    },
+    {
+      "categoryId": "c_ent",
+      "category": "Entertainment",
+      "categoryGroup": "Entertainment",
+      "budgeted": 120.0,
+      "actual": 62.0
+    },
+    {
+      "categoryId": "c_shop",
+      "category": "Shopping",
+      "categoryGroup": "Shopping",
+      "budgeted": 300.0,
+      "actual": 410.0
+    },
+    {
+      "categoryId": "c_health",
+      "category": "Health",
+      "categoryGroup": "Health & Wellness",
+      "budgeted": 150.0,
+      "actual": 90.0
+    },
+    {
+      "categoryId": "c_home",
+      "category": "Home",
+      "categoryGroup": "Home",
+      "budgeted": 200.0,
+      "actual": 175.0
+    },
+    {
+      "categoryId": "c_gifts",
+      "category": "Gifts",
+      "categoryGroup": "Gifts & Donations",
+      "budgeted": 100.0,
+      "actual": 80.0
+    },
+    {
+      "categoryId": "c_misc",
+      "category": "Miscellaneous",
+      "categoryGroup": "Other",
+      "budgeted": 150.0,
+      "actual": 120.0
+    }
+  ]
+}

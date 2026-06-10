@@ -1,0 +1,66 @@
+[
+  {
+    "id": "r_1",
+    "merchant": "Streaming Svc 1",
+    "amount": -16.0,
+    "frequency": "monthly",
+    "next_date": "2026-06-12",
+    "accountId": "acc_006"
+  },
+  {
+    "id": "r_2",
+    "merchant": "Streaming Svc 2",
+    "amount": -12.0,
+    "frequency": "monthly",
+    "next_date": "2026-06-15",
+    "accountId": "acc_006"
+  },
+  {
+    "id": "r_3",
+    "merchant": "Internet Co",
+    "amount": -80.0,
+    "frequency": "monthly",
+    "next_date": "2026-06-14",
+    "accountId": "acc_001"
+  },
+  {
+    "id": "r_4",
+    "merchant": "Utility Co",
+    "amount": -145.0,
+    "frequency": "monthly",
+    "next_date": "2026-06-18",
+    "accountId": "acc_001"
+  },
+  {
+    "id": "r_5",
+    "merchant": "Gym Membership",
+    "amount": -45.0,
+    "frequency": "monthly",
+    "next_date": "2026-06-20",
+    "accountId": "acc_007"
+  },
+  {
+    "id": "r_6",
+    "merchant": "Cloud Storage",
+    "amount": -10.0,
+    "frequency": "monthly",
+    "next_date": "2026-06-22",
+    "accountId": "acc_006"
+  },
+  {
+    "id": "r_7",
+    "merchant": "Employer Payroll",
+    "amount": 3200.0,
+    "frequency": "biweekly",
+    "next_date": "2026-06-13",
+    "accountId": "acc_001"
+  },
+  {
+    "id": "r_8",
+    "merchant": "Auto Loan Payment",
+    "amount": -410.0,
+    "frequency": "monthly",
+    "next_date": "2026-06-25",
+    "accountId": "acc_008"
+  }
+]

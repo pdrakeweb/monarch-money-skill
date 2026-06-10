@@ -1,0 +1,110 @@
+[
+  {
+    "period": "2026-01",
+    "income": 6400.0,
+    "expense": 4800.0,
+    "savings": 1600.0,
+    "savings_rate": 25.0,
+    "by_category": {
+      "Groceries": -600.0,
+      "Dining": -300.0,
+      "Utilities": -330.0,
+      "Shopping": -400.0
+    },
+    "by_group": {
+      "Food & Drink": -900.0,
+      "Bills & Utilities": -330.0,
+      "Shopping": -400.0
+    }
+  },
+  {
+    "period": "2026-02",
+    "income": 6400.0,
+    "expense": 5100.0,
+    "savings": 1300.0,
+    "savings_rate": 20.3,
+    "by_category": {
+      "Groceries": -600.0,
+      "Dining": -300.0,
+      "Utilities": -330.0,
+      "Shopping": -400.0
+    },
+    "by_group": {
+      "Food & Drink": -900.0,
+      "Bills & Utilities": -330.0,
+      "Shopping": -400.0
+    }
+  },
+  {
+    "period": "2026-03",
+    "income": 6400.0,
+    "expense": 4600.0,
+    "savings": 1800.0,
+    "savings_rate": 28.1,
+    "by_category": {
+      "Groceries": -600.0,
+      "Dining": -300.0,
+      "Utilities": -330.0,
+      "Shopping": -400.0
+    },
+    "by_group": {
+      "Food & Drink": -900.0,
+      "Bills & Utilities": -330.0,
+      "Shopping": -400.0
+    }
+  },
+  {
+    "period": "2026-04",
+    "income": 6400.0,
+    "expense": 5300.0,
+    "savings": 1100.0,
+    "savings_rate": 17.2,
+    "by_category": {
+      "Groceries": -600.0,
+      "Dining": -300.0,
+      "Utilities": -330.0,
+      "Shopping": -400.0
+    },
+    "by_group": {
+      "Food & Drink": -900.0,
+      "Bills & Utilities": -330.0,
+      "Shopping": -400.0
+    }
+  },
+  {
+    "period": "2026-05",
+    "income": 6400.0,
+    "expense": 4950.0,
+    "savings": 1450.0,
+    "savings_rate": 22.7,
+    "by_category": {
+      "Groceries": -600.0,
+      "Dining": -300.0,
+      "Utilities": -330.0,
+      "Shopping": -400.0
+    },
+    "by_group": {
+      "Food & Drink": -900.0,
+      "Bills & Utilities": -330.0,
+      "Shopping": -400.0
+    }
+  },
+  {
+    "period": "2026-06",
+    "income": 6400.0,
+    "expense": 4400.0,
+    "savings": 2000.0,
+    "savings_rate": 31.2,
+    "by_category": {
+      "Groceries": -600.0,
+      "Dining": -300.0,
+      "Utilities": -330.0,
+      "Shopping": -400.0
+    },
+    "by_group": {
+      "Food & Drink": -900.0,
+      "Bills & Utilities": -330.0,
+      "Shopping": -400.0
+    }
+  }
+]

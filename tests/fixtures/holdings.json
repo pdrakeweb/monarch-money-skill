@@ -1,0 +1,110 @@
+[
+  {
+    "accountId": "acc_003",
+    "ticker": "VTI",
+    "name": "Vanguard Total Stock Market ETF",
+    "quantity": 200.0,
+    "value": 47800.0,
+    "price": 239.0,
+    "costBasis": 38400.0
+  },
+  {
+    "accountId": "acc_003",
+    "ticker": "VXUS",
+    "name": "Vanguard Total Intl Stock ETF",
+    "quantity": 500.0,
+    "value": 31000.0,
+    "price": 62.0,
+    "costBasis": 29500.0
+  },
+  {
+    "accountId": "acc_003",
+    "ticker": "BND",
+    "name": "Vanguard Total Bond Market ETF",
+    "quantity": 300.0,
+    "value": 21600.0,
+    "price": 72.0,
+    "costBasis": 23100.0
+  },
+  {
+    "accountId": "acc_003",
+    "ticker": "VNQ",
+    "name": "Vanguard Real Estate ETF",
+    "quantity": 500.0,
+    "value": 44600.0,
+    "price": 89.2,
+    "costBasis": null
+  },
+  {
+    "accountId": "acc_004",
+    "ticker": "FXAIX",
+    "name": "Fidelity 500 Index Fund",
+    "quantity": 1200.0,
+    "value": 210000.0,
+    "price": 175.0,
+    "costBasis": 150000.0
+  },
+  {
+    "accountId": "acc_004",
+    "ticker": "FSPSX",
+    "name": "Fidelity Intl Index Fund",
+    "quantity": 2000.0,
+    "value": 62000.0,
+    "price": 31.0,
+    "costBasis": 58000.0
+  },
+  {
+    "accountId": "acc_004",
+    "ticker": "FXNAX",
+    "name": "Fidelity US Bond Index Fund",
+    "quantity": 4000.0,
+    "value": 40000.0,
+    "price": 10.0,
+    "costBasis": 42000.0
+  },
+  {
+    "accountId": "acc_005",
+    "ticker": "AAPL",
+    "name": "Apple Inc",
+    "quantity": 100.0,
+    "value": 23000.0,
+    "price": 230.0,
+    "costBasis": 12000.0
+  },
+  {
+    "accountId": "acc_005",
+    "ticker": "MSFT",
+    "name": "Microsoft Corp",
+    "quantity": 50.0,
+    "value": 22000.0,
+    "price": 440.0,
+    "costBasis": 15000.0
+  },
+  {
+    "accountId": "acc_005",
+    "ticker": "NVDA",
+    "name": "NVIDIA Corp",
+    "quantity": 80.0,
+    "value": 11000.0,
+    "price": 137.5,
+    "costBasis": 14000.0
+  },
+  {
+    "accountId": "acc_005",
+    "ticker": "TSLA",
+    "name": "Tesla Inc",
+    "quantity": 40.0,
+    "value": 11000.0,
+    "price": 275.0,
+    "costBasis": 13000.0
+  },
+  {
+    "accountId": "acc_005",
+    "ticker": "SCHD",
+    "name": "Schwab US Dividend Equity ETF",
+    "quantity": 800.0,
+    "value": 20000.0,
+    "price": 25.0,
+    "costBasis": null
+  }
+]
