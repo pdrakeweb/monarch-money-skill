@@ -110,6 +110,12 @@ Run from the `monarch-money/` directory: `python scripts/fetch.py <command>`.
 | `status` | Cache row counts, ages, API-call total | — |
 | `auth-status` | Session age + expiry estimate | — |
 | `clear-cache` | Empty the cache; next sync re-pulls + re-infers tax buckets | `--include-user-buckets` |
+| `version` | Print the installed skill version | — |
+
+To check which version is deployed, ask Claude (in a chat with the skill)
+"what version of the monarch-money skill is installed?" — it runs
+`fetch.py version`. Versioning rules live in `CLAUDE.md`; the build refuses to
+package if `SKILL.md` frontmatter and `SKILL_VERSION` disagree.
 
 Global flags: `--refresh` (bypass cache TTL), `--mock` (use bundled fixtures,
 no network — great for trying it offline), `--db PATH`, `--fixtures-dir DIR`.

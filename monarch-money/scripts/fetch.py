@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from monarch_client import (  # noqa: E402
     MonarchCache, MonarchClient, MonarchSkillError, classify_error,
+    SKILL_VERSION,
     DEFAULT_DB_PATH, DEFAULT_SESSION_PATH, DEFAULT_CRED_PATH,
     DEFAULT_COOKIE_PATH, DEFAULT_DATA_DIR,
 )
@@ -607,6 +608,7 @@ def render_status(cache):
     st = cache.status()
     size_mb = st["db_size_bytes"] / (1024 * 1024)
     print("## Cache Status\n")
+    print(f"Skill version: {SKILL_VERSION}")
     print(f"Database: {st['db_path']} ({size_mb:.1f} MB)")
     for table in ("accounts", "holdings", "transactions", "budgets",
                   "cashflow", "recurring"):
@@ -664,7 +666,7 @@ class Ctx:
         self.days = getattr(args, "days", 30)
 
 
-NO_AUTH = {"net-worth", "status", "auth-status", "clear-cache"}
+NO_AUTH = {"net-worth", "status", "auth-status", "clear-cache", "version"}
 
 
 def dispatch(args, cache, client):
@@ -698,6 +700,8 @@ def dispatch(args, cache, client):
         run_sync_all(ctx)
     elif cmd == "status":
         render_status(cache)
+    elif cmd == "version":
+        print(f"monarch-money skill version {SKILL_VERSION}")
     elif cmd == "auth-status":
         render_auth_status(args.session_path, args.cred_path, args.cookie_path)
     elif cmd == "clear-cache":
@@ -788,6 +792,7 @@ def build_parser():
     cc.add_argument("--include-user-buckets", action="store_true",
                     help="Also wipe user-corrected tax buckets "
                          "(auto_classified=0). Default keeps them.")
+    sub.add_parser("version", parents=[common])
     return p
 
 

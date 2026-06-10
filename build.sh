@@ -20,6 +20,18 @@ if [ "$skill_name" != "$SKILL_DIR" ]; then
     exit 1
 fi
 
+# --- validate SKILL.md frontmatter version matches SKILL_VERSION constant ----
+md_ver=$(sed -n 's/^version:[[:space:]]*"\{0,1\}\([0-9][0-9.]*\)"\{0,1\}.*/\1/p' "$SKILL_DIR/SKILL.md" | head -1)
+py_ver=$(sed -n 's/^SKILL_VERSION[[:space:]]*=[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' "$SKILL_DIR/scripts/monarch_client.py" | head -1)
+if [ -z "$md_ver" ] || [ -z "$py_ver" ]; then
+    echo "ERROR: missing version: in SKILL.md frontmatter or SKILL_VERSION in monarch_client.py" >&2
+    exit 1
+fi
+if [ "$md_ver" != "$py_ver" ]; then
+    echo "ERROR: version mismatch: SKILL.md says $md_ver, monarch_client.py says $py_ver. Bump both (see CLAUDE.md)." >&2
+    exit 1
+fi
+
 rm -f "$OUT_NAME"
 
 # --- stage to temp so we can guarantee data/ ships empty ----------------------
@@ -61,4 +73,4 @@ EOF
 fi
 
 size=$(wc -c < "$OUT_NAME" | tr -d ' ')
-echo "Built: $OUT_NAME ($size bytes)"
+echo "Built: $OUT_NAME v$md_ver ($size bytes)"

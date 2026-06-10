@@ -35,6 +35,24 @@ docs/ documents/ planning/   design + architecture + execution plan
 build.ps1 / deploy.ps1  package to monarch-money.zip / push to Claude Desktop
 ```
 
+## Versioning — bump on EVERY commit that touches monarch-money\
+
+The skill carries a semver version in TWO places that must always match
+(build.ps1/build.sh refuse to package on mismatch; a unit test checks too):
+
+1. `monarch-money\scripts\monarch_client.py` → `SKILL_VERSION = "X.Y.Z"`
+2. `monarch-money\SKILL.md` frontmatter → `version: "X.Y.Z"`
+
+Before committing any change under `monarch-money\`:
+- **patch** (X.Y.Z+1): bug fixes, doc/instruction tweaks, classifier rules
+- **minor** (X.Y+1.0): new commands, new auth options, new capabilities
+- **major** (X+1.0.0): breaking changes — CLI flags removed/renamed, SQLite
+  schema changes, auth-flow changes that require user re-setup
+
+Update both files, commit, then tag: `git tag vX.Y.Z`. The user verifies the
+installed version by asking the skill's Claude, which runs
+`python scripts/fetch.py version` — if that lags the repo, the deploy is stale.
+
 ## Invariants (don't break these)
 
 - **`gql==4.0`** is pinned transitively by `monarchmoneycommunity==1.3.2`. Never

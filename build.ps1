@@ -24,6 +24,20 @@ if ($skillName -ne $skillDir) {
     exit 1
 }
 
+# --- validate SKILL.md frontmatter version matches SKILL_VERSION constant ----
+$mdVerMatch = Select-String -Path "$skillDir\SKILL.md" -Pattern '^version:\s+"?([0-9]+\.[0-9]+\.[0-9]+)"?'
+$pyVerMatch = Select-String -Path "$skillDir\scripts\monarch_client.py" -Pattern 'SKILL_VERSION\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"'
+if (-not $mdVerMatch -or -not $pyVerMatch) {
+    Write-Error "Missing version: in SKILL.md frontmatter or SKILL_VERSION in monarch_client.py"
+    exit 1
+}
+$mdVer = $mdVerMatch.Matches[0].Groups[1].Value
+$pyVer = $pyVerMatch.Matches[0].Groups[1].Value
+if ($mdVer -ne $pyVer) {
+    Write-Error "Version mismatch: SKILL.md says $mdVer, monarch_client.py says $pyVer. Bump both (see CLAUDE.md)."
+    exit 1
+}
+
 if (Test-Path $outName) { Remove-Item $outName -Force }
 
 # --- copy to temp so we can guarantee data/ is empty -------------------------
@@ -54,4 +68,4 @@ $dest = (Join-Path (Resolve-Path .).Path $outName)
 Remove-Item $tmp -Recurse -Force
 
 $size = (Get-Item $outName).Length
-Write-Host "Built: $outName ($size bytes)"
+Write-Host "Built: $outName v$mdVer ($size bytes)"

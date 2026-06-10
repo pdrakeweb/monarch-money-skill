@@ -1,5 +1,6 @@
 ---
 name: "monarch-money"
+version: "0.4.0"
 description: >
   Access and analyze the user's Monarch Money financial data: accounts, balances,
   net worth, investment holdings, transactions, budgets, and cashflow. Use this
@@ -147,6 +148,11 @@ integration or another tool.
 | `status` | Cache row counts, ages, lifetime API calls | — |
 | `auth-status` | Session age + expiry estimate | — |
 | `clear-cache` | Empty the local cache; next sync re-pulls and re-infers tax buckets | `--include-user-buckets` |
+| `version` | Print the installed skill version | — |
+
+If the user asks **which version of the skill is installed**, run
+`python scripts/fetch.py version` and report the output (it must match the
+`version:` in this file's frontmatter — a mismatch means a broken deploy).
 
 Global: `--refresh` bypasses TTL. (`--mock` exists for development against the
 repo's `tests/fixtures/` — those fixtures are not packaged in the deployed

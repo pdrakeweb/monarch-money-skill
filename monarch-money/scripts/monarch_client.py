@@ -21,6 +21,11 @@ import sqlite3
 import tempfile
 import time
 
+# Skill version — single source of truth. SKILL.md frontmatter `version:` must
+# match (build.ps1/build.sh refuse to package on mismatch, and a unit test
+# checks it). Bump on every commit that touches monarch-money/ — see CLAUDE.md.
+SKILL_VERSION = "0.4.0"
+
 
 # --------------------------------------------------------------------------- #
 # Error classes

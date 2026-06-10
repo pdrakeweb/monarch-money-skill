@@ -179,6 +179,34 @@ def test_status_output(capsys, db):
     assert "accounts" in out
 
 
+def test_version_command(capsys, db):
+    from monarch_client import SKILL_VERSION
+    code, out = _run(capsys, ["version", "--db", db])
+    assert code == 0
+    assert SKILL_VERSION in out
+
+
+def test_status_includes_version(capsys, db):
+    from monarch_client import SKILL_VERSION
+    _run(capsys, ["sync-all", *_base(db)])
+    code, out = _run(capsys, ["status", "--db", db])
+    assert SKILL_VERSION in out
+
+
+def test_skill_md_frontmatter_version_matches_constant():
+    """build.ps1 enforces this too — the frontmatter version and the
+    SKILL_VERSION constant must always move together."""
+    import re
+    from monarch_client import SKILL_VERSION
+    from conftest import _ROOT
+    skill_md = os.path.join(_ROOT, "monarch-money", "SKILL.md")
+    with open(skill_md, encoding="utf-8") as fh:
+        text = fh.read()
+    m = re.search(r'^version:\s*"?([0-9]+\.[0-9]+\.[0-9]+)"?', text, re.M)
+    assert m, "SKILL.md frontmatter is missing a version: field"
+    assert m.group(1) == SKILL_VERSION
+
+
 def test_clear_cache_command(capsys, db):
     _run(capsys, ["sync-all", *_base(db)])
     code, out = _run(capsys, ["clear-cache", "--db", db])
