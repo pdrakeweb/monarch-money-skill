@@ -15,6 +15,15 @@ The deployed copy is a separate artifact — skip this and you are testing
 stale code. Deploy mirrors with robocopy /MIR **excluding `data\`**, so the
 deployed cache/sessions/credentials survive every redeploy.
 
+Claude Desktop only loads skills listed in `manifest.json` next to the
+`skills\` directory — copying files alone is invisible (learned the hard way:
+a first deploy "succeeded" but the skill never appeared). `deploy.ps1` syncs
+the manifest: registers the skill when missing (`Manifest : registered` in
+the summary) and updates the entry's description when SKILL.md's changes.
+If a locally-registered (`skill_local_*`) entry ever disappears after a
+Claude Desktop server sync, do a one-time upload via Settings → Capabilities
+→ Skills — after that, file mirroring keeps it updated.
+
 ## Versioning — bump on EVERY commit that touches the skill directory
 
 The skill carries a semver version in TWO places that must always match

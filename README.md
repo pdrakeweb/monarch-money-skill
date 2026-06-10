@@ -14,7 +14,7 @@ repo** with a single git merge.
 | CLI scaffold | `scripts/cli.py` | `version` / `status` / `clear-cache` built in; `--mock` fixtures, `--refresh` TTL bypass, error-JSON-exit-1 convention, UTF-8 console fix |
 | Versioning | `skill_schema.py` + SKILL.md frontmatter | Dual version stamps; build refuses to package on mismatch; `cli.py version` lets the user ask Claude "what version is installed?" |
 | Build | `build.ps1` / `build.sh` | Auto-discovers the skill dir; validates folder name == SKILL.md `name:` and version match; zips claude.ai-upload format with an **empty `data/`** |
-| Deploy | `deploy.ps1` | Builds, auto-detects Claude Desktop's nested skills-plugin layout, backs up (keeps 5), robocopy /MIR **excluding `data\`** so sessions/cache survive redeploys; `-DryRun` / `-RestartClaude` / `-SkipBackup` |
+| Deploy | `deploy.ps1` | Builds, auto-detects Claude Desktop's nested skills-plugin layout, backs up (keeps 5), robocopy /MIR **excluding `data\`** so sessions/cache survive redeploys, **syncs `manifest.json`** (registers the skill if missing — files alone are invisible to Claude Desktop — and keeps the description in step with SKILL.md); `-DryRun` / `-RestartClaude` / `-SkipBackup` |
 | Setup validation | `validate_setup.py` | Python version, deps, data-dir writability, version-stamp match |
 | Conventions | `CLAUDE.md` | Deploy-after-edit rule, semver bump rules, skeleton-update workflow, invariants |
 

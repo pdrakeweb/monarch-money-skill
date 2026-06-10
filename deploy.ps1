@@ -114,6 +114,74 @@ function Get-SkillName {
     return $name
 }
 
+function Get-SkillDescription {
+    param([string]$SourceDir)
+    $content = Get-Content -LiteralPath (Join-Path $SourceDir 'SKILL.md') -Raw
+    if ($content -notmatch '(?s)\A---\r?\n(.*?)\r?\n---') { return $null }
+    $fm = $Matches[1]
+    # Folded multi-line form: description: >  (indented continuation lines)
+    if ($fm -match '(?sm)^description:\s*>?\s*\r?\n((?:[ \t]+\S.*\r?\n?)+)') {
+        $lines = $Matches[1] -split "\r?\n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+        return ($lines -join ' ').Trim()
+    }
+    if ($fm -match '(?m)^description:\s*"?(.+?)"?\s*$') { return $Matches[1].Trim() }
+    return $null
+}
+
+function Sync-SkillManifest {
+    <#
+      Claude Desktop only loads skills listed in manifest.json (sibling of the
+      skills\ directory) — files alone are invisible. This registers the skill
+      when missing and keeps the manifest description in sync with SKILL.md.
+      A .bak of the manifest is written before any change.
+    #>
+    param([string]$TargetDir, [string]$SkillName, [string]$Description)
+    $skillsDir = Split-Path -Parent $TargetDir
+    $manifestPath = Join-Path (Split-Path -Parent $skillsDir) 'manifest.json'
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
+        Write-Warn "No manifest.json next to the skills dir — Claude Desktop will NOT see this skill."
+        Write-Warn "Install it once via Claude Desktop Settings > Capabilities > Skills (upload the zip)."
+        return 'no-manifest'
+    }
+    if ($DryRun) {
+        Write-Info "[dry-run] would sync manifest.json entry for '$SkillName'"
+        return 'dry-run'
+    }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $entry = @($manifest.skills) | Where-Object { $_.name -eq $SkillName } | Select-Object -First 1
+    $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.ffffffZ')
+    $changed = $false
+    $action = 'unchanged'
+    if ($entry) {
+        if ($Description -and $entry.description -ne $Description) {
+            Copy-Item -LiteralPath $manifestPath "$manifestPath.bak" -Force
+            $entry.description = $Description
+            $entry.updatedAt = $now
+            $changed = $true
+            $action = 'description-updated'
+        }
+    } else {
+        Copy-Item -LiteralPath $manifestPath "$manifestPath.bak" -Force
+        $new = [pscustomobject]@{
+            skillId     = "skill_local_$SkillName"
+            name        = $SkillName
+            description = $Description
+            creatorType = 'user'
+            updatedAt   = $now
+            enabled     = $true
+        }
+        $manifest.skills = @($manifest.skills) + @($new)
+        $changed = $true
+        $action = 'registered'
+        Write-Ok "Registered '$SkillName' in manifest.json (was missing — this is why a bare file copy is invisible)."
+    }
+    if ($changed) {
+        $manifest.lastUpdated = [int64]([datetimeoffset](Get-Date)).ToUnixTimeMilliseconds()
+        $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    }
+    return $action
+}
+
 function Resolve-DeployTarget {
     param([string]$SkillName)
     $appdata = $env:APPDATA
@@ -241,6 +309,8 @@ try {
     $targetDir = $targetInfo.Path
     $backupPath = Backup-ExistingDeployment -Target $targetDir -SkillName $skillName
     $mirror = Invoke-Mirror -Source $sourceDir -Target $targetDir
+    $description = Get-SkillDescription -SourceDir $sourceDir
+    $manifestAction = Sync-SkillManifest -TargetDir $targetDir -SkillName $skillName -Description $description
     if ($RestartClaude) { Restart-ClaudeDesktop }
 
     $elapsed = (Get-Date) - $script:StartTime
@@ -251,6 +321,7 @@ try {
     Write-Host ("  Target layout  : {0}" -f $targetInfo.Layout)
     Write-Host ("  Files copied   : {0}" -f $mirror.Copied)
     Write-Host ("  Files removed  : {0}" -f $mirror.Removed)
+    Write-Host ("  Manifest       : {0}" -f $manifestAction)
     Write-Host ("  Backup         : {0}" -f $(if ($backupPath) { $backupPath } else { '(none)' }))
     Write-Host ("  Elapsed        : {0:N1}s" -f $elapsed.TotalSeconds)
     Write-Host ""
