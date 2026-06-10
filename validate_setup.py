@@ -10,7 +10,7 @@ SHARED SKELETON FILE. Verifies:
   5. data/ is writable (or the cache falls back to temp)
   6. The CLI smoke-runs (version + status against a temp DB)
 """
-import importlib
+
 import os
 import re
 import subprocess
@@ -38,20 +38,21 @@ def main():
         print(FAIL, f"need 3.10+, have {sys.version.split()[0]}")
         failures += 1
 
-    print("[2/6] requirements.txt imports...")
+    print("[2/6] requirements.txt packages installed...")
     req = os.path.join(REPO, "requirements.txt")
     if os.path.exists(req):
+        # Check the installed distribution by name (a package's import name
+        # often differs, e.g. monarchmoneycommunity imports as monarchmoney).
+        from importlib import metadata
         with open(req, encoding="utf-8") as fh:
             for line in fh:
-                pkg = re.split(r"[=<>\[;]", line.strip())[0]
+                pkg = re.split(r"[=<>\[;]", line.strip())[0].strip()
                 if not pkg or pkg.startswith("#"):
                     continue
-                mod = pkg.replace("-", "_")
                 try:
-                    importlib.import_module(mod)
-                    print(PASS, pkg)
-                except ImportError:
-                    print(FAIL, f"{pkg} not importable — pip install -r requirements.txt")
+                    print(PASS, f"{pkg} {metadata.version(pkg)}")
+                except metadata.PackageNotFoundError:
+                    print(FAIL, f"{pkg} not installed — pip install -r requirements.txt")
                     failures += 1
     else:
         print(WARN, "no requirements.txt")
