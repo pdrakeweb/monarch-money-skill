@@ -3,7 +3,7 @@ not just the flat camelCase fixtures. These shapes are taken verbatim from the
 monarchmoneycommunity 1.3.2 query fragments."""
 from fetch import (
     normalize_account, normalize_txn, normalize_holding, normalize_recurring,
-    extract_holding_nodes, _month_bounds, _shift_month,
+    extract_holding_nodes, _extract_budget_rows, _month_bounds, _shift_month,
 )
 
 
@@ -92,6 +92,47 @@ def test_recurring_live_stream_shape():
     assert n["next_date"] == "2026-06-12"
     assert n["account_id"] == "acc_006"
     assert n["id"] == "s1"
+
+
+def test_holding_zero_basis_is_unknown_not_zero():
+    # QA BUG-5: custodians that report no basis send 0 — treating it as a
+    # real $0 basis fabricates a 100% gain and pollutes TLH screens.
+    node = {"quantity": 100.0, "basis": 0, "totalValue": 5000.0,
+            "security": {"ticker": None, "name": "SS TOT STK MKT IDX I",
+                         "currentPrice": 50.0}}
+    n = normalize_holding(node)
+    assert n["cost_basis"] is None
+    assert n["ticker"] is None
+
+
+def test_budget_rows_names_from_category_groups():
+    # QA BUG-2: monthlyAmountsByCategory[].category carries only {id};
+    # the names live under categoryGroups[].categories[].
+    data = {
+        "categoryGroups": [
+            {"name": "Food & Drink", "categories": [
+                {"id": "c_groc", "name": "Groceries"},
+                {"id": "c_dine", "name": "Dining"},
+            ]},
+            {"name": "Bills", "categories": [
+                {"id": "c_util", "name": "Utilities"},
+            ]},
+        ],
+        "budgetData": {"monthlyAmountsByCategory": [
+            {"category": {"id": "c_groc", "__typename": "Category"},
+             "monthlyAmounts": [{"plannedCashFlowAmount": 600.0,
+                                 "actualAmount": 540.0}]},
+            {"category": {"id": "c_util", "__typename": "Category"},
+             "monthlyAmounts": [{"plannedCashFlowAmount": 300.0,
+                                 "actualAmount": 345.0}]},
+        ]},
+    }
+    rows = _extract_budget_rows(data)
+    assert rows[0]["category"] == "Groceries"
+    assert rows[0]["categoryGroup"] == "Food & Drink"
+    assert rows[0]["budgeted"] == 600.0
+    assert rows[1]["category"] == "Utilities"
+    assert rows[1]["categoryGroup"] == "Bills"
 
 
 def test_month_helpers():

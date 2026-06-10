@@ -23,7 +23,7 @@ summaries**; Claude queries the SQLite cache directly for real analysis.
 ## Requirements
 
 - Python 3.10+
-- `pip install -r requirements.txt` (pins `monarchmoneycommunity==1.3.2`, which
+- `pip install -r requirements.txt` (pins `monarchmoneycommunity==1.4.0`, which
   in turn pins `gql==4.0` — **do not override**).
 
 ## First-time auth
@@ -38,16 +38,19 @@ Four options — **all are supported; pick whichever you're comfortable with**
 
 Copy two cookie values from a logged-in Monarch browser session:
 
-1. Log in at app.monarchmoney.com in a desktop browser.
+1. Log in at app.monarch.com in a desktop browser.
 2. DevTools (F12) → **Application** tab (Firefox: **Storage**) → **Cookies** →
-   `https://app.monarchmoney.com`.
-3. Copy the **Value** of the `csrftoken` and `sessionid` rows and give both to
-   Claude (or run locally:
-   `python monarch-money/scripts/setup_auth.py --csrf-token X --session-id Y`).
+   the `app.monarch.com` entry.
+3. Copy the **Value** of the `csrftoken` and `session_id` rows (note the
+   underscore) and give both to Claude — or run locally:
+   `python monarch-money/scripts/setup_auth.py --csrf-token X --session-id Y`
+   (or `--cookie "session_id=...; csrftoken=..."`).
 
-The values are validated with one API call and saved to
-`data/cookie_session.json` (git-ignored). They expire with the browser session
-(typically weeks) — just re-copy when that happens.
+The values are validated with a real API call (`login_with_cookies`) and saved
+in the standard session pickle — cookie sessions reload like token sessions.
+QA-verified: every read and CSRF-protected write works identically under
+cookie auth. Cookies expire with the browser session (typically weeks) — just
+re-copy when that happens.
 
 ### Option C — bearer token
 

@@ -108,13 +108,18 @@ def normalize_holding(h):
     # Live shape: portfolio.aggregateHoldings.edges[].node =
     #   {quantity, basis, totalValue, security{ticker, name, currentPrice}}
     sec = h.get("security") or {}
+    # Monarch reports basis=0 for positions where the custodian provides no
+    # basis (e.g. employer-plan funds). 0 means UNKNOWN, not free shares —
+    # store NULL so P/L renders as em-dash and TLH screens exclude the row
+    # instead of computing a 100% phantom gain (QA BUG-5).
+    basis = h.get("costBasis", h.get("cost_basis", h.get("basis")))
     return {
         "ticker": h.get("ticker") or sec.get("ticker"),
         "name": h.get("name") or sec.get("name"),
         "quantity": h.get("quantity"),
         "value": h.get("value", h.get("totalValue")),
         "price": h.get("price", sec.get("currentPrice")),
-        "cost_basis": h.get("costBasis", h.get("cost_basis", h.get("basis"))),
+        "cost_basis": basis if basis else None,
     }
 
 
@@ -226,8 +231,10 @@ def sync_holdings(ctx):
             cache.write_holdings(acct_id, rows)
         cache.increment_api_calls()
     else:
+        # Monarch's live type vocabulary is 'brokerage'; 'investment' kept
+        # for fixtures/older data (QA field finding).
         inv = cache._conn.execute(
-            "SELECT id FROM accounts WHERE type='investment'"
+            "SELECT id FROM accounts WHERE type IN ('investment','brokerage')"
         ).fetchall()
         for (acct_id,) in inv:
             data = asyncio.run(ctx.client.mm.get_account_holdings(acct_id))
@@ -289,15 +296,22 @@ def sync_budgets(ctx, period):
 
 
 def _extract_budget_rows(data):
-    # Best-effort flatten of the live get_budgets() shape.
+    # Live shape (QA-verified): category nodes under monthlyAmountsByCategory
+    # carry only {id, __typename}; the names live under
+    # categoryGroups[].categories[]. Build id -> (name, group) first.
+    name_by_id = {}
+    for g in (data.get("categoryGroups") or []):
+        gname = g.get("name")
+        for ct in (g.get("categories") or []):
+            name_by_id[ct.get("id")] = (ct.get("name"), gname)
     out = []
     try:
         for item in data.get("budgetData", {}).get("monthlyAmountsByCategory", []):
-            cat = item.get("category", {})
+            cid = (item.get("category") or {}).get("id")
+            nm, grp = name_by_id.get(cid, (None, None))
             amts = (item.get("monthlyAmounts") or [{}])[0]
             out.append({
-                "categoryId": cat.get("id"), "category": cat.get("name"),
-                "categoryGroup": (cat.get("group") or {}).get("name"),
+                "categoryId": cid, "category": nm, "categoryGroup": grp,
                 "budgeted": amts.get("plannedCashFlowAmount"),
                 "actual": amts.get("actualAmount"),
             })
@@ -566,16 +580,26 @@ def render_net_worth(cache):
         by_type[typ] = by_type.get(typ, 0) + (bal or 0)
     assets = sum(v for v in by_type.values() if v >= 0)
     liabilities = sum(-v for v in by_type.values() if v < 0)
+    # Monarch's live vocabulary (depository/brokerage/real_estate/...) plus
+    # the older flat names; anything unmapped falls back to a title-cased
+    # type so no account category is silently dropped (QA BUG-3).
+    labels = {"depository": "Cash", "brokerage": "Investments",
+              "investment": "Investments", "real_estate": "Real Estate",
+              "checking": "Checking", "savings": "Savings",
+              "credit": "Credit", "loan": "Loans", "other": "Other"}
+
+    def _label(typ):
+        return labels.get(typ, (typ or "other").replace("_", " ").title())
+
     print(f"## Net Worth (from cached accounts, last synced {age_phrase(age)})\n")
     print(f"Assets:      {money(assets)}")
-    for typ in ("checking", "savings", "investment"):
-        if typ in by_type:
-            print(f"  {typ.title()}: {money(by_type[typ])}")
+    for typ, v in sorted(by_type.items(), key=lambda kv: -kv[1]):
+        if v >= 0:
+            print(f"  {_label(typ)}: {money(v)}")
     print(f"Liabilities: {money(liabilities)}")
-    for typ in ("credit", "loan"):
-        if typ in by_type:
-            label = "Loans" if typ == "loan" else typ.title()
-            print(f"  {label}: {money(abs(by_type[typ]))}")
+    for typ, v in sorted(by_type.items(), key=lambda kv: kv[1]):
+        if v < 0:
+            print(f"  {_label(typ)}: {money(abs(v))}")
     print(f"\nNet Worth: {money(assets - liabilities)}")
 
 
@@ -599,9 +623,18 @@ def render_auth_status(session_path, cred_path, cookie_path):
         dt = _dt.datetime.fromtimestamp(mtime)
         days = int((time.time() - mtime) / 86400)
         print(f"Last modified: {dt:%Y-%m-%d %H:%M} ({days} days ago)")
-        print("Estimated expiry: sessions typically last weeks to months")
+        try:
+            import pickle
+            with open(session_path, "rb") as fh:
+                data = pickle.load(fh)
+            mode = data.get("auth_mode", "token") if isinstance(data, dict) else "token"
+            print(f"Auth mode: {mode}")
+        except Exception:  # noqa: BLE001 - diagnostic only
+            pass
+        print("Estimated expiry: sessions typically last weeks to months "
+              "(cookie sessions may rotate sooner)")
     else:
-        print("Last modified: (no token session)")
+        print("Last modified: (no saved session)")
     if os.path.exists(cookie_path):
         mtime = os.path.getmtime(cookie_path)
         days = int((time.time() - mtime) / 86400)

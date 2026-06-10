@@ -293,11 +293,16 @@ class MonarchCache:
         self._conn.commit()
 
     def unclassified_investment_accounts(self):
-        """Account ids that are type=investment but bucket='other'."""
+        """Account ids that are investment-type but bucket='other'.
+
+        Monarch's live type vocabulary uses 'brokerage' for investment
+        accounts (QA field finding); 'investment' kept for fixtures/older data.
+        """
         rows = self._conn.execute(
             "SELECT a.id FROM accounts a "
             "JOIN account_tax_buckets b ON a.id = b.account_id "
-            "WHERE a.type = 'investment' AND b.tax_bucket = 'other'"
+            "WHERE a.type IN ('investment','brokerage') "
+            "AND b.tax_bucket = 'other'"
         ).fetchall()
         return [r[0] for r in rows]
 
@@ -509,21 +514,26 @@ DEFAULT_CRED_PATH = os.path.join(DEFAULT_DATA_DIR, "credentials.json")
 DEFAULT_COOKIE_PATH = os.path.join(DEFAULT_DATA_DIR, "cookie_session.json")
 DEFAULT_DB_PATH = os.path.join(DEFAULT_DATA_DIR, "monarch_cache.db")
 
-MONARCH_ORIGIN = "https://app.monarchmoney.com"
+MONARCH_ORIGIN = "https://app.monarch.com"
 
 
-def apply_cookie_auth(mm, csrftoken, sessionid):
-    """Configure a MonarchMoney instance for Django session-cookie auth.
+def apply_cookie_auth(mm, csrftoken, session_id):
+    """Configure a MonarchMoney instance for cookie auth.
 
-    The library only knows bearer tokens, but its `_headers` dict feeds every
-    GraphQL request verbatim, so injecting the browser's session cookies plus
-    the CSRF/Origin headers Django's middleware checks gives an authenticated
-    transport without any token.
+    monarchmoneycommunity >= 1.4.0 supports cookies natively (set_cookies
+    sets the Cookie / X-Csrftoken / Origin headers and auth_mode='cookie',
+    which save_session/load_session persist). The manual-header fallback
+    covers older library versions. Monarch's cookie names are `session_id`
+    and `csrftoken` (REQUIRED_COOKIES).
     """
-    mm._headers["Cookie"] = f"csrftoken={csrftoken}; sessionid={sessionid}"
-    mm._headers["X-CSRFToken"] = csrftoken
-    mm._headers["Origin"] = MONARCH_ORIGIN
-    mm._headers["Referer"] = MONARCH_ORIGIN + "/"
+    cookies = {"session_id": session_id, "csrftoken": csrftoken}
+    if hasattr(mm, "set_cookies"):
+        mm.set_cookies(cookies)
+    else:  # pre-1.4 fallback: hand-build the headers
+        mm._headers["Cookie"] = f"csrftoken={csrftoken}; session_id={session_id}"
+        mm._headers["X-CSRFToken"] = csrftoken
+        mm._headers["Origin"] = MONARCH_ORIGIN
+        mm._headers["Referer"] = MONARCH_ORIGIN + "/"
     return mm
 
 
@@ -696,10 +706,10 @@ class MonarchClient:
     @classmethod
     def from_cookie_session(cls, cookie_path=DEFAULT_COOKIE_PATH,
                             cache_path=DEFAULT_DB_PATH):
-        """Authenticate via saved browser cookies (csrftoken + sessionid).
-
-        Cookie sessions can't use the library's pickle (it only stores bearer
-        tokens), so they persist as data/cookie_session.json instead.
+        """Legacy fallback: cookies saved by pre-1.4 setups in
+        data/cookie_session.json. New cookie sessions persist in the standard
+        session pickle (library 1.4.0 saves auth_mode + cookies natively) and
+        load via from_session.
         """
         from monarchmoney import MonarchMoney
         if not os.path.exists(cookie_path):
@@ -708,14 +718,17 @@ class MonarchClient:
             with open(cookie_path, "r", encoding="utf-8") as fh:
                 cookies = json.load(fh)
             csrftoken = cookies["csrftoken"]
-            sessionid = cookies["sessionid"]
+            # Older files used Django's default name; Monarch's is session_id.
+            session_id = cookies.get("session_id", cookies.get("sessionid"))
+            if not session_id:
+                raise KeyError("session_id")
         except (json.JSONDecodeError, KeyError) as exc:
             raise AuthExpiredError(
                 "Saved cookie session is unreadable. Re-run: python "
                 "scripts/setup_auth.py --csrf-token ... --session-id ..."
             ) from exc
         mm = MonarchMoney()
-        apply_cookie_auth(mm, csrftoken, sessionid)
+        apply_cookie_auth(mm, csrftoken, session_id)
         return cls(mm, MonarchCache(cache_path))
 
     @classmethod

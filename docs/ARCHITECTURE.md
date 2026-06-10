@@ -47,14 +47,19 @@ pattern for chat-based Option A setup: authenticate once, then rotate the
 password — the session keeps working and nothing left in chat history is
 usable.
 
-**Option D (browser cookies):** `--csrf-token X --session-id Y`. Monarch's
-backend is Django; a logged-in browser holds `csrftoken` and `sessionid`
-cookies, visible in DevTools → Application → Cookies (including the HttpOnly
-sessionid). apply_cookie_auth() injects Cookie / X-CSRFToken / Origin / Referer
-into the library's _headers dict, which feeds every GraphQL request. Validated
-at setup with one API call; persisted to data/cookie_session.json (the library
-pickle can only hold bearer tokens). ensure_authenticated() order: token
-pickle → cookie session → persisted credentials → AuthExpiredError.
+**Option D (browser cookies):** `--csrf-token X --session-id Y` (or
+`--cookie "session_id=...; csrftoken=..."`). Monarch's cookie names are
+`session_id` and `csrftoken` (library REQUIRED_COOKIES), visible in DevTools →
+Application → Cookies at app.monarch.com — including the HttpOnly session_id.
+Library 1.4.0 supports cookies natively: login_with_cookies validates with a
+real API call and the standard session pickle persists auth_mode='cookie' +
+the cookie dict, so cookie sessions reload through from_session like any
+other. QA-verified: all reads AND all CSRF-protected writes work under cookie
+auth. apply_cookie_auth() prefers native set_cookies and falls back to manual
+headers on pre-1.4 libraries; legacy data/cookie_session.json sidecars (from
+pre-1.4 setups, possibly with the old `sessionid` key) still load via
+from_cookie_session. ensure_authenticated() order: session pickle → legacy
+cookie sidecar → persisted credentials → AuthExpiredError.
 
 This matters because users may have no local Python: the skill executes in
 Anthropic's container (which has Python), so all options can run

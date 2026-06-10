@@ -1,4 +1,4 @@
-# Monarch API surface (`monarchmoneycommunity` 1.3.2)
+# Monarch API surface (`monarchmoneycommunity` 1.4.0)
 
 The skill wraps the **`monarchmoney`** package (community fork, MIT). Every
 method is **async** — call it with `asyncio.run(mm.method(...))`. The library
@@ -61,6 +61,21 @@ limitation".
 - **Schema drift** — a `KeyError`/GraphQL parse error means Monarch changed the
   schema; surface `SchemaChangedError` and `pip install -U monarchmoneycommunity`.
 - **401 / LoginFailed** — the session is dead; never retry, re-run `setup_auth.py`.
+- **Account types are live-vocabulary** — Monarch returns `brokerage`,
+  `depository`, `real_estate`, `credit`, `loan`; there is no `investment`
+  type in live data. Queries that filter investment accounts must use
+  `type IN ('investment','brokerage')`.
+- **`get_aggregate_snapshots` rejects `date` objects** (QA-verified): the
+  library puts them in GraphQL variables unserialised →
+  `Object of type date is not JSON serializable`. Pass ISO `"YYYY-MM-DD"`
+  strings instead.
+- **Budget category names are indirect** — `monthlyAmountsByCategory[].category`
+  carries only `{id}`; names live under `categoryGroups[].categories[]`.
+- **`basis = 0` means unknown, not zero** — custodians without basis data
+  (employer-plan funds) report 0. The sync stores those as NULL.
+- **No `delete_transaction_tag`** — `create_transaction_tag` exists but tags
+  can only be deleted by hand in the Monarch UI. Don't create tags you can't
+  clean up; warn the user before any tag creation.
 
 ---
 
@@ -85,7 +100,7 @@ SELECT b.tax_bucket,
        COUNT(*)                 AS n_accounts
 FROM accounts a
 JOIN account_tax_buckets b ON a.id = b.account_id
-WHERE a.type = 'investment' AND a.is_hidden = 0
+WHERE a.type IN ('investment','brokerage') AND a.is_hidden = 0
 GROUP BY b.tax_bucket
 ORDER BY total DESC;
 ```
@@ -96,7 +111,8 @@ SELECT h.account_id, h.ticker, h.name,
        h.value, h.cost_basis,
        ROUND(h.value - h.cost_basis, 2) AS unrealized_pl
 FROM holdings h
-WHERE h.cost_basis IS NOT NULL
+WHERE h.cost_basis IS NOT NULL   -- unknown basis (incl. Monarch's 0) is NULL
+  AND h.ticker IS NOT NULL       -- employer-plan funds have no public ticker
   AND h.value < h.cost_basis
 ORDER BY unrealized_pl ASC;
 -- NB: position-level only. See lot-level limitation before acting.

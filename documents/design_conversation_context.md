@@ -76,5 +76,19 @@ analysis require brokerage CSV supplementation. SKILL.md must state this plainly
 
 ## Core Library
 
-monarchmoneycommunity==1.3.2 (bradleyseanf fork). Pins gql==4.0 — do not
-override. API is async throughout; use asyncio.run() wrappers.
+monarchmoneycommunity==1.4.0 (bradleyseanf fork). Pins gql==4.0 — do not
+override. API is async throughout; use asyncio.run() wrappers. 1.4.0 added
+native cookie auth (login_with_cookies / set_cookies, REQUIRED_COOKIES =
+session_id + csrftoken) and the session pickle persists cookie sessions.
+
+## QA findings (2026-06, live 55-account household)
+
+Comprehensive read/write API test under cookie auth: 22/23 reads pass, 8/8
+reversible writes pass — cookie auth fully equivalent to token auth. Bugs
+fixed from that run: live type vocabulary is 'brokerage' not 'investment'
+(holdings sync + tax warnings); budget category names live under
+categoryGroups[].categories[], not on the category nodes; net-worth sublines
+needed depository/brokerage/real_estate labels; basis=0 means unknown (store
+NULL, exclude from TLH; null-ticker employer funds never get TLH swaps).
+Library quirk: get_aggregate_snapshots needs ISO date strings, not date
+objects. API gap: no delete_transaction_tag — tags are permanent via API.

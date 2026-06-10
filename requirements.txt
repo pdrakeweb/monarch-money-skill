@@ -1,2 +1,2 @@
-monarchmoneycommunity==1.3.2
+monarchmoneycommunity==1.4.0
 pyotp>=2.9

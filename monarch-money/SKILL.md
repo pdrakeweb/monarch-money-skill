@@ -75,24 +75,27 @@ re-run; nothing is left in a bad state.
 
 The user copies two cookie values from a logged-in Monarch browser session.
 This is simpler than token hunting because DevTools lists cookies by name in a
-table — including the HttpOnly `sessionid` that JavaScript can't read:
+table — including the HttpOnly `session_id` that JavaScript can't read:
 
-1. Log in at **app.monarchmoney.com** in a desktop browser.
+1. Log in at **app.monarch.com** in a desktop browser.
 2. DevTools (F12) → **Application** tab (Firefox: **Storage**) →
-   **Cookies** → `https://app.monarchmoney.com`.
-3. Copy the **Value** of the `csrftoken` row and the `sessionid` row.
+   **Cookies** → the `app.monarch.com` entry.
+3. Copy the **Value** of the `csrftoken` row and the `session_id` row
+   (Monarch's name — note the underscore; it is not Django's `sessionid`).
 4. Paste both in the chat.
 
 ```
-python scripts/setup_auth.py --csrf-token CSRFTOKEN --session-id SESSIONID
+python scripts/setup_auth.py --csrf-token CSRFTOKEN --session-id SESSION_ID
 ```
+(or the whole string at once:
+`python scripts/setup_auth.py --cookie "session_id=...; csrftoken=..."`)
 
-Validates with one lightweight API call, then saves
-`data/cookie_session.json`. The cookies last as long as the browser session
-would (typically weeks); on expiry (`AuthExpiredError`) ask for fresh values.
-Note: if Monarch's API rejects cookie auth for GraphQL (it can change this
-server-side), the validation call fails immediately — fall back to Option A
-or C rather than debugging.
+Validated via the library's native `login_with_cookies` (a real API call) and
+saved in the standard `data/session.pickle` — cookie sessions reload exactly
+like token sessions on every later fetch. QA-verified: all reads AND all
+CSRF-protected writes work identically under cookie auth. The cookies last as
+long as the browser session would (typically weeks; possibly shorter than a
+bearer token); on expiry (`AuthExpiredError`) ask for fresh values.
 
 ### Option B — persisted credentials (zero-touch, opt-in)
 
@@ -164,7 +167,7 @@ Then query the cache:
 ```sql
 SELECT b.tax_bucket, ROUND(SUM(a.balance),2) total
 FROM accounts a JOIN account_tax_buckets b ON a.id=b.account_id
-WHERE a.type='investment' AND a.is_hidden=0
+WHERE a.type IN ('investment','brokerage') AND a.is_hidden=0
 GROUP BY b.tax_bucket ORDER BY total DESC;
 ```
 
@@ -176,7 +179,9 @@ python scripts/fetch.py holdings
 SELECT account_id, ticker, value, cost_basis,
        ROUND(value-cost_basis,2) AS unrealized_pl
 FROM holdings
-WHERE cost_basis IS NOT NULL AND value < cost_basis
+WHERE cost_basis IS NOT NULL    -- unknown basis (incl. Monarch's 0) is NULL
+  AND ticker IS NOT NULL        -- employer-plan funds have no public ticker
+  AND value < cost_basis
 ORDER BY unrealized_pl ASC;
 ```
 ⚠ **Always state the lot-level caveat** (§6) when surfacing TLH candidates.
@@ -202,7 +207,7 @@ List anything still ambiguous:
 ```sql
 SELECT a.id, a.name, a.subtype, b.tax_bucket
 FROM accounts a JOIN account_tax_buckets b ON a.id=b.account_id
-WHERE a.type='investment' AND b.tax_bucket='other';
+WHERE a.type IN ('investment','brokerage') AND b.tax_bucket='other';
 ```
 The `accounts` command prints a ⚠ warning when any investment account is still
 `other`.
@@ -217,6 +222,10 @@ no short/long-term split**. So:
 - The loss *amount* is approximate (blended basis), and **wash-sale safety
   cannot be judged from Monarch data alone**.
 - Precise harvest sizing and wash-sale checks need the brokerage's lot-level CSV.
+- Custodians that report no basis (common for employer-plan funds) send
+  `basis = 0`; the sync stores those as NULL so they show `—` and stay out of
+  TLH queries. Such positions usually also have no public ticker — never
+  propose TLH swaps for null-ticker rows.
 
 Say this plainly; don't imply lot-level precision the data can't support.
 
@@ -247,6 +256,9 @@ temp-dir copy (analysis still works; it just won't persist).
     Unarmed calls raise `ConfirmationRequiredError` — the gate exists in code,
     so skipping the question doesn't work. Never arm a method the user didn't
     just confirm; never arm more than the one method needed.
+    Special warning for `create_transaction_tag`: the API has **no tag
+    deletion** — a created tag is permanent until removed by hand in the
+    Monarch UI. Say so in the confirmation question.
   - Correcting the local `account_tax_buckets` table (§5) needs no
     confirmation: that's the skill's own cache, not Monarch.
 - The user is finance-sophisticated — skip 101-level explanations; lead with the

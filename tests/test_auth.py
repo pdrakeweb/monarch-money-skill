@@ -127,28 +127,50 @@ def test_no_token_and_no_credentials_errors(capsys):
         setup_auth.main([])
 
 
-def test_option_d_cookie_saves_cookie_session(tmp_path):
+def test_option_d_cookie_native_login_and_pickle(tmp_path):
     session_path, cred_path = _paths(tmp_path)
-    cookie_path = str(tmp_path / "cookie_session.json")
     mm = _fake_mm(session_path)
     result = setup_auth.run_setup(
         csrf_token="csrf_abc", session_id="sess_xyz",
-        session_path=session_path, cred_path=cred_path,
-        cookie_path=cookie_path, mm=mm,
+        session_path=session_path, cred_path=cred_path, mm=mm,
     )
-    # Headers injected for Django session auth.
-    assert "csrftoken=csrf_abc" in mm._headers["Cookie"]
-    assert "sessionid=sess_xyz" in mm._headers["Cookie"]
-    assert mm._headers["X-CSRFToken"] == "csrf_abc"
-    assert mm._headers["Origin"] == "https://app.monarchmoney.com"
-    mm.get_subscription_details.assert_called_once()  # validation ping
+    # Native 1.4 path: login_with_cookies validates, pickle persists.
+    mm.login_with_cookies.assert_called_once_with(
+        "session_id=sess_xyz; csrftoken=csrf_abc",
+        save_session=False, verify=True)
+    mm.save_session.assert_called_once_with(session_path)
     mm.login.assert_not_called()
-    mm.save_session.assert_not_called()  # no bearer token to pickle
     assert result["method"] == "cookies"
-    with open(cookie_path) as fh:
-        saved = json.load(fh)
-    assert saved == {"csrftoken": "csrf_abc", "sessionid": "sess_xyz"}
+    assert os.path.exists(session_path)
     assert not os.path.exists(cred_path)
+
+
+def test_option_d_raw_cookie_string(tmp_path):
+    session_path, cred_path = _paths(tmp_path)
+    mm = _fake_mm(session_path)
+    result = setup_auth.run_setup(
+        cookie_string="csrftoken=c9 ;  session_id=s9",
+        session_path=session_path, cred_path=cred_path, mm=mm,
+    )
+    mm.login_with_cookies.assert_called_once_with(
+        "session_id=s9; csrftoken=c9", save_session=False, verify=True)
+    assert result["method"] == "cookies"
+
+
+def test_parse_cookie_string_legacy_sessionid():
+    out = setup_auth.parse_cookie_string("sessionid=old; csrftoken=c")
+    assert out == {"session_id": "old", "csrftoken": "c"}
+
+
+def test_option_d_cookie_string_missing_value_errors(tmp_path):
+    from monarch_client import MonarchSkillError
+    session_path, cred_path = _paths(tmp_path)
+    mm = _fake_mm(session_path)
+    with pytest.raises(MonarchSkillError):
+        setup_auth.run_setup(
+            cookie_string="csrftoken=only_this",
+            session_path=session_path, cred_path=cred_path, mm=mm,
+        )
 
 
 def test_option_d_cookie_values_not_in_stdout(tmp_path, capsys, monkeypatch):
@@ -257,9 +279,10 @@ def test_read_methods_pass_through():
         client.cache.close()
 
 
-def test_ensure_authenticated_falls_back_to_cookie_session(tmp_path):
+def test_ensure_authenticated_falls_back_to_legacy_cookie_file(tmp_path):
     from monarch_client import MonarchClient
     cookie_path = str(tmp_path / "cookie_session.json")
+    # Legacy pre-1.4 sidecar with the old Django cookie name.
     with open(cookie_path, "w") as fh:
         json.dump({"csrftoken": "c1", "sessionid": "s1"}, fh)
     client = MonarchClient.ensure_authenticated(
@@ -269,7 +292,8 @@ def test_ensure_authenticated_falls_back_to_cookie_session(tmp_path):
         cookie_path=cookie_path,
     )
     try:
-        assert "sessionid=s1" in client.mm._headers["Cookie"]
-        assert client.mm._headers["X-CSRFToken"] == "c1"
+        # Native set_cookies path: cookie dict adopted, CSRF header set.
+        assert client.mm._cookies == {"session_id": "s1", "csrftoken": "c1"}
+        assert client.mm._headers["X-Csrftoken"] == "c1"
     finally:
         client.cache.close()
