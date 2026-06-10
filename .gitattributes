@@ -1,0 +1,4 @@
+# Shell scripts must keep LF — a CRLF shebang line breaks on Linux/macOS.
+*.sh text eol=lf
+# PowerShell is happiest with CRLF on Windows.
+*.ps1 text eol=crlf
