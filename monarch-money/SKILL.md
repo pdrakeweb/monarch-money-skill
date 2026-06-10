@@ -193,9 +193,15 @@ python scripts/fetch.py cashflow --months 3
 
 ## 5. Correcting tax buckets
 
-Buckets are auto-classified from each account's Monarch subtype on every sync
-(`roth`, `traditional`, `hsa`, `taxable`, `other`). Auto rows never overwrite a
-user correction. To correct one, set `auto_classified = 0`:
+Buckets are auto-classified from each account's Monarch subtype — and, where
+the subtype is ambiguous, its name — on every sync (`roth`, `traditional`,
+`hsa`, `taxable`, `excluded`, `other`). Notable rules: `trust` → taxable;
+`non_taxable_brokerage_account` (employer windows like Fidelity BrokerageLink)
+→ roth if the account name says Roth, else traditional; charitable /
+donor-advised accounts (Charitable, Daffy, …) → `excluded`, which keeps them
+out of asset-location math without nagging. Auto rows are refreshed each sync
+but never overwrite a user correction. To correct one, set
+`auto_classified = 0`:
 
 ```sql
 UPDATE account_tax_buckets

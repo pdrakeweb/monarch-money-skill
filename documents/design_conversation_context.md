@@ -92,3 +92,11 @@ needed depository/brokerage/real_estate labels; basis=0 means unknown (store
 NULL, exclude from TLH; null-ticker employer funds never get TLH swaps).
 Library quirk: get_aggregate_snapshots needs ISO date strings, not date
 objects. API gap: no delete_transaction_tag — tags are permanent via API.
+
+Classifier follow-up from the same household: subtypes are snake_case
+(normalise underscores); trust → taxable; health_savings_account → hsa;
+non_taxable_brokerage_account must NOT map to taxable — it's an employer
+brokerage window (BrokerageLink), disambiguated by name (… Roth → roth, else
+traditional); charitable/Daffy accounts → new 'excluded' bucket. Auto rows now
+upsert each sync (user rows still never touched) so classifier fixes heal
+stale data without manual SQL.

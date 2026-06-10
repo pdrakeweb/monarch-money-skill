@@ -84,14 +84,20 @@ account_id TEXT PK, tax_bucket TEXT, auto_classified INT DEFAULT 1,
 subtype_source TEXT
 
 Auto-populated on every accounts sync. Rows with auto_classified=0 (user-set)
-are NEVER overwritten.
+are NEVER overwritten; auto rows (auto_classified=1) are upserted each sync so
+classifier improvements heal stale classifications.
 
-Inference map (case-insensitive subtype match):
+Inference map (case-insensitive; underscores in live snake_case subtypes are
+normalised to spaces; account NAME used where the subtype is ambiguous):
+- name contains charitable/daffy/donor advised/giving account → excluded
+  (out of asset-location math, no unclassified warning)
 - roth, roth ira, roth 401k, roth 403b → roth
+- non_taxable_brokerage_account (employer brokerage windows, e.g. Fidelity
+  BrokerageLink) → roth if the NAME contains roth, else traditional
 - traditional, traditional ira, 401k, 403b, 457b, sep ira, simple ira, pension → traditional
-- hsa, health savings → hsa
+- hsa, health savings (incl. health_savings_account) → hsa
 - 529, education → other
-- brokerage, individual, joint, taxable, investment (without IRA/401k context) → taxable
+- brokerage, individual, joint, taxable, investment, trust → taxable
 - anything else → other
 
 After sync, if any investment account maps to 'other', append warning to stdout:

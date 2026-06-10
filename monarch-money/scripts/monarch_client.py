@@ -54,25 +54,45 @@ class ConfirmationRequiredError(MonarchSkillError):
 # --------------------------------------------------------------------------- #
 # Order matters: "roth ira" must match roth before the bare "ira" traditional
 # rule, and "traditional ira" must match traditional before "ira".
+# Live Monarch subtypes are snake_case (health_savings_account,
+# non_taxable_brokerage_account) — underscores are normalised to spaces first.
 _TRAD_KEYWORDS = (
     "traditional", "401k", "403b", "457b", "sep ira", "simple ira", "pension",
 )
 _HSA_KEYWORDS = ("hsa", "health savings")
 _EDU_KEYWORDS = ("529", "education")
-_TAXABLE_KEYWORDS = ("brokerage", "individual", "joint", "taxable", "investment")
+_TAXABLE_KEYWORDS = ("brokerage", "individual", "joint", "taxable",
+                     "investment", "trust")
+_CHARITABLE_KEYWORDS = ("charitable", "daffy", "donor advised", "donor-advised",
+                        "giving account")
 
 
-def infer_tax_bucket(subtype):
-    """Map a Monarch account subtype string to a tax bucket.
+def infer_tax_bucket(subtype, name=None):
+    """Map a Monarch account subtype (and, for ambiguous subtypes, the account
+    name) to a tax bucket.
 
-    Returns one of: roth | traditional | hsa | taxable | other.
-    A NULL/empty subtype is 'other' (ambiguous — needs user classification).
+    Returns one of: roth | traditional | hsa | taxable | excluded | other.
+    'excluded' marks accounts that belong in no tax bucket (charitable /
+    donor-advised funds) — kept out of asset-location math without triggering
+    the unclassified warning. A NULL/empty subtype is 'other' (ambiguous —
+    needs user classification).
     """
-    s = (subtype or "").lower().strip()
+    s = (subtype or "").lower().replace("_", " ").strip()
+    n = (name or "").lower()
+    # Charitable / donor-advised funds: not the user's assets for tax
+    # purposes, whatever the subtype claims (often plain 'brokerage').
+    for kw in _CHARITABLE_KEYWORDS:
+        if kw in n:
+            return "excluded"
     if not s:
         return "other"
     if "roth" in s:
         return "roth"
+    # Employer-plan brokerage windows (e.g. Fidelity BrokerageLink) carry the
+    # subtype non_taxable_brokerage_account — the NAME disambiguates the
+    # Roth window from the traditional one (QA field finding).
+    if "non taxable" in s or "nontaxable" in s:
+        return "roth" if "roth" in n else "traditional"
     for kw in _TRAD_KEYWORDS:
         if kw in s:
             return "traditional"
@@ -279,15 +299,19 @@ class MonarchCache:
         self.auto_classify_tax_buckets(rows)
 
     def auto_classify_tax_buckets(self, account_rows):
-        """INSERT OR IGNORE a tax bucket per account. Never overwrites an
-        existing row — so user corrections (auto_classified=0) and prior
-        auto rows both survive re-sync."""
+        """Upsert a tax bucket per account. User corrections
+        (auto_classified=0) are NEVER overwritten; auto rows are updated on
+        every sync so classifier improvements heal stale classifications."""
         for a in account_rows:
-            bucket = infer_tax_bucket(a.get("subtype"))
+            bucket = infer_tax_bucket(a.get("subtype"), a.get("name"))
             self._conn.execute(
-                "INSERT OR IGNORE INTO account_tax_buckets "
+                "INSERT INTO account_tax_buckets "
                 "(account_id, tax_bucket, auto_classified, subtype_source) "
-                "VALUES (?, ?, 1, ?)",
+                "VALUES (?, ?, 1, ?) "
+                "ON CONFLICT(account_id) DO UPDATE SET "
+                "  tax_bucket = excluded.tax_bucket, "
+                "  subtype_source = excluded.subtype_source "
+                "WHERE account_tax_buckets.auto_classified = 1",
                 (a["id"], bucket, a.get("subtype")),
             )
         self._conn.commit()

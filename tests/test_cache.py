@@ -174,3 +174,55 @@ def test_tax_bucket_ambiguous_investment(cache):
     cache.write_accounts([_acct("x1", type="investment", subtype=None)])
     bucket, _ = _bucket(cache, "x1")
     assert bucket == "other"
+
+
+def test_tax_bucket_trust_is_taxable(cache):
+    cache.write_accounts([_acct("t1", subtype="trust")])
+    bucket, _ = _bucket(cache, "t1")
+    assert bucket == "taxable"
+
+
+def test_tax_bucket_underscored_hsa(cache):
+    cache.write_accounts([_acct("h1", subtype="health_savings_account")])
+    bucket, _ = _bucket(cache, "h1")
+    assert bucket == "hsa"
+
+
+def test_tax_bucket_non_taxable_brokerage_by_name(cache):
+    # Fidelity BrokerageLink windows: the subtype says non_taxable_brokerage,
+    # the NAME disambiguates traditional vs roth (QA field finding).
+    cache.write_accounts([
+        _acct("bl1", subtype="non_taxable_brokerage_account",
+              name="BrokerageLink"),
+        _acct("bl2", subtype="non_taxable_brokerage_account",
+              name="BrokerageLink Roth"),
+    ])
+    assert _bucket(cache, "bl1")[0] == "traditional"
+    assert _bucket(cache, "bl2")[0] == "roth"
+
+
+def test_tax_bucket_charitable_excluded(cache):
+    # Donor-advised / charitable funds are not the user's assets-by-tax-bucket;
+    # 'excluded' keeps them out of asset-location math AND out of the
+    # unclassified-warning nag (which only counts 'other').
+    cache.write_accounts([
+        _acct("ch1", subtype="brokerage", name="Fidelity Charitable Giving"),
+        _acct("ch2", subtype="brokerage", name="Daffy DAF"),
+    ])
+    assert _bucket(cache, "ch1")[0] == "excluded"
+    assert _bucket(cache, "ch2")[0] == "excluded"
+
+
+def test_tax_bucket_auto_rows_reclassified_on_logic_upgrade(cache):
+    """Auto-classified rows update when the classifier improves; user rows
+    (auto_classified=0) never do."""
+    cache.write_accounts([_acct("rc1", subtype="trust")])
+    # Simulate a stale auto classification from an older classifier.
+    cache._conn.execute(
+        "UPDATE account_tax_buckets SET tax_bucket='other' WHERE account_id='rc1'"
+    )
+    cache._conn.commit()
+    cache.write_accounts([_acct("rc1", subtype="trust")])
+    bucket, auto = _bucket(cache, "rc1")
+    assert bucket == "taxable"  # re-sync healed the stale auto row
+    assert auto == 1
