@@ -121,6 +121,18 @@ id TEXT PK, merchant, amount REAL, frequency, next_date TEXT, account_id, fetche
 key TEXT PK, value TEXT
 Keys: last_full_sync, last_tx_sync, schema_version, api_call_count
 
+## Read-Only Enforcement
+
+The skill must never mutate the user's Monarch account. Enforced in code, not
+convention: MonarchClient always wraps the library instance in a
+ReadOnlyMonarch proxy whose __getattr__ raises BlockedEndpointError (a
+MonarchSkillError) for any name in BLOCKED_METHODS — account lifecycle
+(create_manual_account, delete_account, update_account), transaction mutations,
+budget writes, recurring updates, and uploads. The block fires at attribute
+lookup, before any request object exists. Read methods and internal attributes
+(_headers, token, save_session) pass through. The only state the skill ever
+writes is its own SQLite cache and session files under data/.
+
 ## Error Classes
 
 AuthExpiredError — LoginFailedException / HTTP 401

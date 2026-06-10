@@ -170,6 +170,46 @@ def test_option_d_requires_both_cookies(capsys):
         setup_auth.main(["--csrf-token", "only_one"])
 
 
+def test_blocked_account_create_delete(tmp_path):
+    from monarch_client import MonarchClient, MonarchCache, BlockedEndpointError
+    inner = MagicMock()
+    client = MonarchClient(inner, MonarchCache(":memory:"))
+    try:
+        with pytest.raises(BlockedEndpointError):
+            client.mm.delete_account("acc_001")
+        with pytest.raises(BlockedEndpointError):
+            client.mm.create_manual_account
+        inner.delete_account.assert_not_called()
+        inner.create_manual_account.assert_not_called()
+    finally:
+        client.cache.close()
+
+
+def test_blocked_other_destructive_endpoints():
+    from monarch_client import MonarchClient, MonarchCache, BlockedEndpointError
+    client = MonarchClient(MagicMock(), MonarchCache(":memory:"))
+    try:
+        for name in ("delete_transaction", "create_transaction",
+                     "update_account", "reset_budget", "set_budget_amount"):
+            with pytest.raises(BlockedEndpointError):
+                getattr(client.mm, name)
+    finally:
+        client.cache.close()
+
+
+def test_read_methods_pass_through():
+    from monarch_client import MonarchClient, MonarchCache
+    inner = MagicMock()
+    client = MonarchClient(inner, MonarchCache(":memory:"))
+    try:
+        client.mm.get_accounts()
+        inner.get_accounts.assert_called_once()
+        # internal attrs forward too (cookie auth pokes _headers)
+        assert client.mm._headers is inner._headers
+    finally:
+        client.cache.close()
+
+
 def test_ensure_authenticated_falls_back_to_cookie_session(tmp_path):
     from monarch_client import MonarchClient
     cookie_path = str(tmp_path / "cookie_session.json")

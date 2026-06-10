@@ -225,6 +225,12 @@ temp-dir copy (analysis still works; it just won't persist).
 
 ## 8. Notes for analysis
 
+- **The skill is strictly read-only.** Destructive Monarch endpoints (account
+  create/delete/update, transaction edits, budget writes, uploads) are blocked
+  in code at the client layer and raise `BlockedEndpointError`. Never attempt
+  them — if the user asks to change something in Monarch, direct them to the
+  Monarch app. Correcting the local `account_tax_buckets` table (§5) is fine:
+  that's the skill's own cache, not Monarch.
 - The user is finance-sophisticated — skip 101-level explanations; lead with the
   number and the non-obvious caveat.
 - Amounts: positive = inflow/income, negative = outflow/expense.

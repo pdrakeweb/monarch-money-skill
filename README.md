@@ -123,6 +123,15 @@ For `--mfa-code` you supply a current 6-digit TOTP code. For Option B's
 > — Monarch then shows the Base32 secret string. That string is your
 > `--mfa-secret-key`.
 
+## Read-only by design
+
+The skill never writes to your Monarch account. Destructive endpoints —
+`create_manual_account`, `delete_account`, `update_account`, transaction
+create/update/delete, budget writes, uploads — are **blocked in code** at the
+client layer (`ReadOnlyMonarch` proxy raises `BlockedEndpointError` before any
+request is constructed), not just by convention. The only thing the skill ever
+modifies is its own local SQLite cache.
+
 ## Known limitations
 
 - **Lot-level data is unavailable.** Monarch exposes position-level holdings

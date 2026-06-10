@@ -41,6 +41,10 @@ class NetworkError(MonarchSkillError):
     """Cannot reach api.monarch.com (DNS / timeout / connection refused)."""
 
 
+class BlockedEndpointError(MonarchSkillError):
+    """A destructive Monarch endpoint was called. The skill is read-only."""
+
+
 # --------------------------------------------------------------------------- #
 # Tax-bucket inference
 # --------------------------------------------------------------------------- #
@@ -519,10 +523,68 @@ def apply_cookie_auth(mm, csrftoken, sessionid):
     return mm
 
 
+# Destructive / mutating Monarch endpoints. The skill is strictly read-only:
+# these are blocked at the client layer so no code path (or confused model)
+# can create, modify, or delete anything in the user's Monarch account.
+BLOCKED_METHODS = frozenset({
+    # account lifecycle — explicitly blocked
+    "create_manual_account",
+    "delete_account",
+    "update_account",
+    # transactions
+    "create_transaction",
+    "delete_transaction",
+    "update_transaction",
+    "update_transaction_splits",
+    "set_transaction_tags",
+    "create_transaction_tag",
+    "create_transaction_category",
+    "delete_transaction_category",
+    "delete_transaction_categories",
+    # budgets
+    "set_budget_amount",
+    "reset_budget",
+    "update_flexible_budget",
+    "update_flex_rollover_settings",
+    # recurring / uploads
+    "update_reoccuring",
+    "upload_account_balance_history",
+    "upload_attachment",
+})
+
+
+class ReadOnlyMonarch:
+    """Proxy around MonarchMoney that refuses destructive endpoints.
+
+    Read methods and internal attributes (_headers, token, save_session, …)
+    pass through untouched; anything in BLOCKED_METHODS raises
+    BlockedEndpointError before the underlying method is even looked up, so
+    no request is ever constructed.
+    """
+
+    def __init__(self, mm):
+        self._mm = mm
+
+    def __getattr__(self, name):
+        if name in BLOCKED_METHODS:
+            raise BlockedEndpointError(
+                f"Monarch endpoint '{name}' is blocked: the monarch-money "
+                "skill is read-only and never creates, modifies, or deletes "
+                "accounts or data. Make changes in the Monarch app directly."
+            )
+        return getattr(self._mm, name)
+
+
 class MonarchClient:
-    """Wraps a logged-in MonarchMoney instance plus the cache."""
+    """Wraps a logged-in MonarchMoney instance plus the cache.
+
+    The instance is always wrapped in ReadOnlyMonarch — destructive endpoints
+    raise BlockedEndpointError no matter how the client was constructed.
+    """
 
     def __init__(self, mm_instance, cache):
+        if not isinstance(mm_instance, ReadOnlyMonarch):
+            mm_instance = ReadOnlyMonarch(mm_instance)
         self.mm = mm_instance
         self.cache = cache
 

@@ -7,6 +7,12 @@ pins `gql==4.0`; do not override.
 Authentication is a saved-session pickle (`mm.load_session(path)`); see
 `setup_auth.py`. `fetch.py` only ever calls the **read** methods below.
 
+**Write endpoints are blocked, not merely unused.** `MonarchClient` wraps the
+library in a `ReadOnlyMonarch` proxy: account create/delete/update, transaction
+mutations, budget writes, `update_reoccuring`, and uploads all raise
+`BlockedEndpointError` at attribute access. Do not try to call them through
+`client.mm` — it cannot work, by design.
+
 ---
 
 ## Read methods used by the skill
