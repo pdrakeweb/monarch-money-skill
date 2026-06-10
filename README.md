@@ -61,6 +61,30 @@ per-skill files (`SKILL.md`, `skill_schema.py`, your CLI subcommands) conflict
 in your favor. If you improve a shared file while inside a skill repo, port
 the change back to this skeleton so every other skill can pull it.
 
+## Persistence model (critical — learned the hard way)
+
+**Skill-relative `data/` does NOT survive a chat session.** Each session gets
+a fresh copy of the skill (Claude Desktop local agent mode) or a fresh
+container (claude.ai / mobile). The skeleton therefore resolves a persistent
+data dir (`resolve_data_dir`) in this order:
+
+1. `<SKILL>_DATA_DIR` env override
+2. `/mnt/user-data/.claude-skills/<name>/` — cloud containers; persists
+   across claude.ai/mobile sessions
+3. `~/.claude-skills/<name>/` — desktop local agent mode; persists across
+   sessions on the machine
+4. skill-relative `data/` → temp dir (per-session fallbacks)
+
+**Cross-device auth** (e.g. log in on the laptop, use it on the phone): the
+only channel that reaches every device is the uploaded skill package itself.
+`build.ps1 -IncludeAuth` (or `build.sh --include-auth`) bundles auth files
+into `data/bootstrap/` in the zip; `bootstrap_data()` copies them into the
+persistent data dir on first run of a new session, never overwriting newer
+local files. Opt-in only — the secrets ship inside the package on claude.ai.
+A `.env` in the persistent data dir is the zero-touch desktop pattern: each
+new session reads it (e.g. credentials or a cookie string) and re-auths
+without asking.
+
 ## Patterns to follow (learned the hard way)
 
 - **Markdown summaries out, SQL in.** Scripts print compact summaries;

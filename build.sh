@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # SHARED SKELETON FILE — POSIX counterpart of build.ps1. Auto-discovers the
 # skill dir; validates name + version; zips with empty data/.
+# --include-auth: bundle auth files (session.pickle/credentials.json/
+# cookie_session.json/.env) into data/bootstrap/ for cross-device bootstrap.
+# The secrets ship inside the uploaded package — opt-in only.
 set -euo pipefail
 cd "$(dirname "$0")"
+INCLUDE_AUTH=0
+[ "${1:-}" = "--include-auth" ] && INCLUDE_AUTH=1
 
 # --- discover the skill directory ---------------------------------------------
 skill_dirs=()
@@ -46,6 +51,22 @@ rm -rf "$tmp/$SKILL_DIR/data"
 mkdir -p "$tmp/$SKILL_DIR/data"
 echo "This directory is created at runtime (cache, sessions). Ships empty." \
     > "$tmp/$SKILL_DIR/data/.gitkeep"
+
+if [ "$INCLUDE_AUTH" = "1" ]; then
+    bootstrap="$tmp/$SKILL_DIR/data/bootstrap"
+    mkdir -p "$bootstrap"
+    bundled=""
+    for f in session.pickle credentials.json cookie_session.json .env; do
+        for src in "$HOME/.claude-skills/$SKILL_DIR" "$PWD/$SKILL_DIR/data"; do
+            if [ -f "$src/$f" ]; then cp "$src/$f" "$bootstrap/"; bundled="$bundled $f"; break; fi
+        done
+    done
+    if [ -z "$bundled" ]; then
+        echo "ERROR: --include-auth set but no auth files found" >&2
+        exit 1
+    fi
+    echo "WARNING: AUTH BUNDLED into the zip:$bundled (ships inside the uploaded package)" >&2
+fi
 
 out_abs="$PWD/$OUT_NAME"
 if command -v zip >/dev/null 2>&1; then

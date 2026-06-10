@@ -24,11 +24,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from skill_cache import SkillCache                      # noqa: E402
 from skill_common import (                              # noqa: E402
     SkillError, fail, force_utf8_stdout, age_phrase,
+    resolve_data_dir, bootstrap_data,
 )
 import skill_schema                                     # noqa: E402
 
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_DB_PATH = os.path.join(SKILL_DIR, "data", "cache.db")
+SKILL_NAME = os.path.basename(SKILL_DIR)
+# Persistent across chat sessions (env override / /mnt/user-data / ~) —
+# skill-relative data/ would die with each session's container copy.
+DATA_DIR = resolve_data_dir(
+    SKILL_NAME, SKILL_DIR,
+    env_var=SKILL_NAME.upper().replace("-", "_") + "_DATA_DIR")
+bootstrap_data(DATA_DIR, SKILL_DIR)
+DEFAULT_DB_PATH = os.path.join(DATA_DIR, "cache.db")
 DEFAULT_FIXTURES_DIR = os.path.join(
     os.path.dirname(SKILL_DIR), "tests", "fixtures")
 

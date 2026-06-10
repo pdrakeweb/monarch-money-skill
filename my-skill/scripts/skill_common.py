@@ -92,6 +92,77 @@ def read_frontmatter_version(skill_md_path):
 
 
 # --------------------------------------------------------------------------- #
+# Persistent data directory
+#
+# Skill-relative data/ does NOT persist across chat sessions: every session
+# gets a fresh copy of the skill (desktop local agent mode) or a fresh
+# container (cloud/mobile). Resolution order, most-persistent first:
+#   1. $<ENV_VAR> override (explicit user choice)
+#   2. /mnt/user-data/.claude-skills/<name>/   — cloud containers; persists
+#      across sessions on claude.ai/mobile
+#   3. ~/.claude-skills/<name>/                — desktop local agent mode;
+#      persists across sessions on the machine (ForecastSkill precedent)
+#   4. <skill>/data/                           — per-session fallback
+# --------------------------------------------------------------------------- #
+def resolve_data_dir(skill_name, skill_dir, env_var=None):
+    """Return the most-persistent writable data directory for this skill."""
+    if env_var:
+        override = os.environ.get(env_var)
+        if override:
+            os.makedirs(override, exist_ok=True)
+            return override
+
+    candidates = []
+    if os.path.isdir("/mnt/user-data"):
+        candidates.append(os.path.join("/mnt/user-data", ".claude-skills", skill_name))
+    home = os.path.expanduser("~")
+    if home and home != "~":
+        candidates.append(os.path.join(home, ".claude-skills", skill_name))
+    candidates.append(os.path.join(skill_dir, "data"))
+
+    for cand in candidates:
+        try:
+            os.makedirs(cand, exist_ok=True)
+            probe = os.path.join(cand, ".write_probe")
+            with open(probe, "w") as fh:
+                fh.write("ok")
+            os.remove(probe)
+            return cand
+        except OSError:
+            continue
+    import tempfile
+    return tempfile.gettempdir()
+
+
+def bootstrap_data(data_dir, skill_dir):
+    """First-run bootstrap: if the packaged skill ships data/bootstrap/ files
+    (opt-in via build -IncludeAuth) and the persistent data dir doesn't have
+    them yet, copy them over. This is how auth set up on one device reaches
+    new sessions on other devices: the files ride inside the uploaded skill
+    package. Existing files in data_dir are NEVER overwritten."""
+    src = os.path.join(skill_dir, "data", "bootstrap")
+    if not os.path.isdir(src) or os.path.abspath(src).startswith(
+            os.path.abspath(data_dir)):
+        return []
+    copied = []
+    import shutil
+    for name in os.listdir(src):
+        dst = os.path.join(data_dir, name)
+        if os.path.exists(dst):
+            continue
+        try:
+            shutil.copy2(os.path.join(src, name), dst)
+            try:
+                os.chmod(dst, 0o600)
+            except OSError:
+                pass
+            copied.append(name)
+        except OSError:
+            continue
+    return copied
+
+
+# --------------------------------------------------------------------------- #
 # Config helpers (.env pattern — see README "API keys & secrets")
 # --------------------------------------------------------------------------- #
 def load_dotenv(path):

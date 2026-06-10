@@ -97,6 +97,44 @@ def test_writability_fallback(monkeypatch, tmp_path):
         c.close()
 
 
+def test_resolve_data_dir_env_override(monkeypatch, tmp_path):
+    from skill_common import resolve_data_dir
+    override = str(tmp_path / "override")
+    monkeypatch.setenv("TESTSKILL_DATA_DIR", override)
+    got = resolve_data_dir("test-skill", str(tmp_path / "skill"),
+                           env_var="TESTSKILL_DATA_DIR")
+    assert got == override
+    assert os.path.isdir(override)
+
+
+def test_resolve_data_dir_prefers_persistent_home(monkeypatch, tmp_path):
+    from skill_common import resolve_data_dir
+    fake_home = str(tmp_path / "home")
+    os.makedirs(fake_home)
+    monkeypatch.setenv("HOME", fake_home)
+    monkeypatch.setenv("USERPROFILE", fake_home)
+    got = resolve_data_dir("test-skill", str(tmp_path / "skill"))
+    assert got == os.path.join(fake_home, ".claude-skills", "test-skill")
+
+
+def test_bootstrap_data_copies_once_never_overwrites(tmp_path):
+    from skill_common import bootstrap_data
+    skill_dir = tmp_path / "skill"
+    boot = skill_dir / "data" / "bootstrap"
+    boot.mkdir(parents=True)
+    (boot / "session.pickle").write_bytes(b"BUNDLED")
+    data_dir = tmp_path / "persistent"
+    data_dir.mkdir()
+    copied = bootstrap_data(str(data_dir), str(skill_dir))
+    assert copied == ["session.pickle"]
+    assert (data_dir / "session.pickle").read_bytes() == b"BUNDLED"
+    # Existing (e.g. newer, locally refreshed) files are never clobbered.
+    (data_dir / "session.pickle").write_bytes(b"LOCAL_NEWER")
+    copied2 = bootstrap_data(str(data_dir), str(skill_dir))
+    assert copied2 == []
+    assert (data_dir / "session.pickle").read_bytes() == b"LOCAL_NEWER"
+
+
 def test_version_stamps_match():
     skill_md = os.path.join(SKILL_DIR, "SKILL.md")
     with open(skill_md, encoding="utf-8") as fh:

@@ -13,7 +13,16 @@
        scripts/skill_schema.py (or scripts/*.py fallback).
     4. Stages a copy with an EMPTY data/ (no cache, sessions, credentials),
        strips __pycache__, zips with the top-level skill folder included.
+
+.PARAMETER IncludeAuth
+    OPT-IN: bundle auth material (session.pickle, credentials.json,
+    cookie_session.json, .env) into data/bootstrap/ inside the zip, sourced
+    from the persistent data dir (~\.claude-skills\<name>\) or the repo's
+    data\. New sessions on ANY device bootstrap auth from these files — the
+    package (including the secrets) is uploaded to claude.ai, so only use
+    this when cross-device auth is worth that trade-off.
 #>
+param([switch]$IncludeAuth)
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
@@ -71,6 +80,31 @@ if (Test-Path $dataDir) {
 }
 "This directory is created at runtime (cache, sessions). Ships empty." |
     Set-Content -Path (Join-Path $dataDir ".gitkeep")
+
+# --- opt-in: bundle auth material for cross-device bootstrap ------------------
+if ($IncludeAuth) {
+    $authFiles = @("session.pickle", "credentials.json", "cookie_session.json", ".env")
+    $sources = @(
+        (Join-Path $env:USERPROFILE ".claude-skills\$skillName"),
+        (Join-Path $PSScriptRoot "$skillDir\data")
+    )
+    $bootstrap = Join-Path $dataDir "bootstrap"
+    New-Item $bootstrap -ItemType Directory | Out-Null
+    $bundled = @()
+    foreach ($f in $authFiles) {
+        foreach ($src in $sources) {
+            $p = Join-Path $src $f
+            if (Test-Path $p) { Copy-Item $p $bootstrap; $bundled += $f; break }
+        }
+    }
+    if ($bundled.Count -eq 0) {
+        Write-Error "-IncludeAuth set but no auth files found in: $($sources -join '; ')"
+        exit 1
+    }
+    Write-Host "⚠ AUTH BUNDLED into the zip: $($bundled -join ', ')" -ForegroundColor Yellow
+    Write-Host "  These secrets ship inside the package (uploaded to claude.ai)." -ForegroundColor Yellow
+    Write-Host "  New sessions on any device will bootstrap auth from them." -ForegroundColor Yellow
+}
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $dest = (Join-Path (Resolve-Path .).Path $outName)
