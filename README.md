@@ -119,14 +119,22 @@ For `--mfa-code` you supply a current 6-digit TOTP code. For Option B's
   → `pip install -U monarchmoneycommunity`).
 - **Session lifetime.** Sessions expire eventually; re-run `setup_auth.py`.
 
-## Build & deploy (Windows / Claude Desktop)
+## Build & deploy
 
 ```
-.\build.ps1     # validates folder==SKILL.md name; emits monarch-money.zip (empty data/)
-.\deploy.ps1    # builds, then copies the zip into Claude Desktop's skills-plugin dir
+.\build.ps1                  # validates folder==SKILL.md name; emits monarch-money.zip (empty data/)
+./build.sh                   # same, for macOS/Linux (uses zip or falls back to Python)
+.\deploy.ps1                 # build + extract + mirror into Claude Desktop's skills dir
+.\deploy.ps1 -DryRun         # preview everything, write nothing
+.\deploy.ps1 -RestartClaude  # deploy and restart Claude Desktop
+.\deploy.ps1 -SkipBackup     # skip the pre-deploy backup (last 5 are kept)
 ```
 
-After deploy, **restart Claude Desktop** to pick up changes.
+The zip is also what you upload directly at claude.ai → Settings → Capabilities
+→ Skills. `deploy.ps1` auto-detects Claude Desktop's nested skills-plugin
+layout, backs up the previous deployment, and excludes `data\` from the mirror
+so your session and cache survive redeploys. After deploying, **restart Claude
+Desktop** to pick up changes.
 
 ## Development
 

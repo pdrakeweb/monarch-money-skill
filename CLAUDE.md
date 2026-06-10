@@ -5,14 +5,22 @@
 After editing ANY file in `monarch-money\`, run:
 
 ```powershell
-.\deploy.ps1
+.\deploy.ps1                 # build + mirror into Claude Desktop's skills dir
+.\deploy.ps1 -RestartClaude  # ...and bounce Claude Desktop for you
+.\deploy.ps1 -DryRun         # preview target + file changes, write nothing
 ```
 
-Then **restart Claude Desktop**.
+Then **restart Claude Desktop** (unless you passed `-RestartClaude`).
 
 `deploy.ps1` does NOT refresh the running skill automatically — the deployed copy
 is a separate artifact. Edit source → `deploy.ps1` → restart Claude Desktop.
 Skip this and you are testing stale code.
+
+Deploy details: it auto-detects the nested `<guid>\<guid>\skills\monarch-money\`
+layout under `%APPDATA%\Claude\local-agent-mode-sessions\skills-plugin`, backs up
+the previous deployment (last 5 kept in `.backups\`; skip with `-SkipBackup`),
+and mirrors with robocopy /MIR — **excluding `data\`**, so the deployed session
+pickle / cache / credentials survive every redeploy.
 
 ## Repo layout
 
