@@ -279,6 +279,38 @@ def test_read_methods_pass_through():
         client.cache.close()
 
 
+def test_ensure_authenticated_falls_back_to_env_cookies(tmp_path):
+    """Zero-touch desktop pattern: a .env in the persistent data dir with
+    MONARCH_COOKIES lets every new chat session re-auth without asking."""
+    from monarch_client import MonarchClient
+    env_path = tmp_path / ".env"
+    env_path.write_text('MONARCH_COOKIES="session_id=es1; csrftoken=ec1"\n')
+    client = MonarchClient.ensure_authenticated(
+        session_path=str(tmp_path / "missing.pickle"),
+        cred_path=str(tmp_path / "missing_creds.json"),
+        cache_path=str(tmp_path / "cache.db"),
+        cookie_path=str(tmp_path / "missing_cookies.json"),
+        env_path=str(env_path),
+    )
+    try:
+        assert client.mm._cookies == {"session_id": "es1", "csrftoken": "ec1"}
+        assert client.mm._headers["X-Csrftoken"] == "ec1"
+    finally:
+        client.cache.close()
+
+
+def test_ensure_authenticated_no_auth_raises(tmp_path):
+    from monarch_client import MonarchClient
+    with pytest.raises(AuthExpiredError):
+        MonarchClient.ensure_authenticated(
+            session_path=str(tmp_path / "a.pickle"),
+            cred_path=str(tmp_path / "b.json"),
+            cache_path=str(tmp_path / "c.db"),
+            cookie_path=str(tmp_path / "d.json"),
+            env_path=str(tmp_path / ".env"),
+        )
+
+
 def test_ensure_authenticated_falls_back_to_legacy_cookie_file(tmp_path):
     from monarch_client import MonarchClient
     cookie_path = str(tmp_path / "cookie_session.json")

@@ -117,7 +117,8 @@ def test_api_call_counter(cache):
 def test_writability_fallback(monkeypatch, tmp_path):
     def boom(*a, **k):
         raise PermissionError("read-only fs")
-    monkeypatch.setattr(monarch_client.os, "makedirs", boom)
+    import skill_cache
+    monkeypatch.setattr(skill_cache.os, "makedirs", boom)
     target = str(tmp_path / "ro" / "monarch_cache.db")
     c = MonarchCache(target)
     try:
@@ -259,7 +260,7 @@ def test_clear_resets_sync_markers_keeps_counters(cache):
     cache.increment_api_calls(5)
     cache.clear()
     assert cache.get_last_tx_sync() is None
-    assert cache._get_meta("last_full_sync") is None
+    assert cache.get_meta("last_full_sync") is None
     assert int(cache.status()["api_call_count"]) == 5  # lifetime counter kept
 
 

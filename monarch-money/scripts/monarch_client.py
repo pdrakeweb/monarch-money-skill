@@ -18,20 +18,26 @@ Nothing here ever prints a password, session token, or MFA secret to stdout.
 import json
 import os
 import sqlite3
-import tempfile
+import sys
 import time
 
-# Skill version — single source of truth. SKILL.md frontmatter `version:` must
-# match (build.ps1/build.sh refuse to package on mismatch, and a unit test
-# checks it). Bump on every commit that touches monarch-money/ — see CLAUDE.md.
-SKILL_VERSION = "0.4.0"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Shared skeleton machinery (claude-skill-skeleton) — improve upstream, then
+# `git fetch skeleton && git merge skeleton/main`.
+from skill_cache import SkillCache                       # noqa: E402
+from skill_common import (                               # noqa: E402
+    SkillError, resolve_data_dir, bootstrap_data, load_dotenv,
+)
+# Per-skill schema + version (skill_schema.py is monarch's, not skeleton's).
+from skill_schema import SKILL_VERSION, SCHEMA           # noqa: E402,F401
 
 
 # --------------------------------------------------------------------------- #
 # Error classes
 # --------------------------------------------------------------------------- #
-class MonarchSkillError(Exception):
-    """Base for the three fatal, non-retryable error classes."""
+class MonarchSkillError(SkillError):
+    """Base for the fatal, non-retryable error classes (skeleton SkillError)."""
 
 
 class AuthExpiredError(MonarchSkillError):
@@ -115,170 +121,13 @@ def infer_tax_bucket(subtype, name=None):
     return "other"
 
 
-# --------------------------------------------------------------------------- #
-# Schema
-# --------------------------------------------------------------------------- #
-SCHEMA_VERSION = 1
-
-SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS accounts (
-    id              TEXT PRIMARY KEY,
-    name            TEXT,
-    type            TEXT,
-    subtype         TEXT,
-    institution     TEXT,
-    balance         REAL,
-    display_balance REAL,
-    currency        TEXT DEFAULT 'USD',
-    is_manual       INTEGER,
-    is_hidden       INTEGER,
-    is_closed       INTEGER,
-    updated_at      INTEGER,
-    fetched_at      INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS account_tax_buckets (
-    account_id      TEXT PRIMARY KEY,
-    tax_bucket      TEXT,
-    auto_classified INTEGER DEFAULT 1,
-    subtype_source  TEXT
-);
-
-CREATE TABLE IF NOT EXISTS holdings (
-    account_id      TEXT,
-    ticker          TEXT,
-    name            TEXT,
-    quantity        REAL,
-    value           REAL,
-    price           REAL,
-    cost_basis      REAL,
-    fetched_at      INTEGER,
-    PRIMARY KEY (account_id, ticker)
-);
-
-CREATE TABLE IF NOT EXISTS transactions (
-    id              TEXT PRIMARY KEY,
-    account_id      TEXT,
-    date            TEXT,
-    amount          REAL,
-    merchant        TEXT,
-    category        TEXT,
-    category_group  TEXT,
-    tags            TEXT,
-    notes           TEXT,
-    is_pending      INTEGER,
-    fetched_at      INTEGER
-);
-CREATE INDEX IF NOT EXISTS tx_date     ON transactions(date);
-CREATE INDEX IF NOT EXISTS tx_account  ON transactions(account_id);
-CREATE INDEX IF NOT EXISTS tx_category ON transactions(category);
-
-CREATE TABLE IF NOT EXISTS budgets (
-    period          TEXT,
-    category_id     TEXT,
-    category        TEXT,
-    category_group  TEXT,
-    budgeted        REAL,
-    actual          REAL,
-    fetched_at      INTEGER,
-    PRIMARY KEY (period, category_id)
-);
-
-CREATE TABLE IF NOT EXISTS cashflow (
-    period           TEXT PRIMARY KEY,
-    income           REAL,
-    expense          REAL,
-    savings          REAL,
-    savings_rate     REAL,
-    by_category_json TEXT,
-    by_group_json    TEXT,
-    fetched_at       INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS recurring (
-    id              TEXT PRIMARY KEY,
-    merchant        TEXT,
-    amount          REAL,
-    frequency       TEXT,
-    next_date       TEXT,
-    account_id      TEXT,
-    fetched_at      INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS meta (
-    key             TEXT PRIMARY KEY,
-    value           TEXT
-);
-"""
-
-# Per-table TTLs (seconds) used by prune_stale's 2x safety margin.
-_TABLE_TTL = {
-    "accounts": 4 * 3600,
-    "holdings": 4 * 3600,
-    "recurring": 4 * 3600,
-}
-
-
-class MonarchCache:
-    """SQLite-backed offline cache for Monarch financial data."""
+class MonarchCache(SkillCache):
+    """Monarch's cache: skeleton SkillCache (schema-driven storage, TTL
+    freshness, counters, status, schema-driven clear/prune) plus the
+    monarch-specific write methods and tax-bucket logic below."""
 
     def __init__(self, db_path):
-        self.db_path = db_path
-        if db_path != ":memory:":
-            self.db_path = self._ensure_writable(db_path)
-        self._conn = sqlite3.connect(self.db_path, timeout=5.0)
-        self._conn.executescript(SCHEMA_SQL)
-        self._set_meta("schema_version", str(SCHEMA_VERSION))
-        self._conn.commit()
-
-    # ---- writability -------------------------------------------------- #
-    @staticmethod
-    def _fallback_path():
-        stamp = time.strftime("%Y%m%d")
-        return os.path.join(tempfile.gettempdir(), f"monarch_cache_{stamp}.db")
-
-    def _ensure_writable(self, db_path):
-        """Try to create the parent dir; on PermissionError fall back to temp."""
-        parent = os.path.dirname(os.path.abspath(db_path))
-        try:
-            os.makedirs(parent, exist_ok=True)
-            return db_path
-        except PermissionError:
-            return self._fallback_path()
-
-    # ---- meta helpers ------------------------------------------------- #
-    def _set_meta(self, key, value):
-        self._conn.execute(
-            "INSERT INTO meta (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, str(value)),
-        )
-
-    def _get_meta(self, key):
-        row = self._conn.execute(
-            "SELECT value FROM meta WHERE key = ?", (key,)
-        ).fetchone()
-        return row[0] if row else None
-
-    # ---- freshness ---------------------------------------------------- #
-    def is_fresh(self, table, key_col, key_val, ttl_s):
-        """True iff the newest matching row's fetched_at is within ttl_s."""
-        row = self._conn.execute(
-            f"SELECT MAX(fetched_at) FROM {table} WHERE {key_col} = ?",
-            (key_val,),
-        ).fetchone()
-        if not row or row[0] is None:
-            return False
-        return (time.time() - row[0]) < ttl_s
-
-    def any_fresh(self, table, ttl_s):
-        """True iff the table has at least one row newer than ttl_s."""
-        row = self._conn.execute(
-            f"SELECT MAX(fetched_at) FROM {table}"
-        ).fetchone()
-        if not row or row[0] is None:
-            return False
-        return (time.time() - row[0]) < ttl_s
+        super().__init__(db_path, SCHEMA)
 
     # ---- accounts ----------------------------------------------------- #
     def write_accounts(self, rows):
@@ -422,98 +271,35 @@ class MonarchCache:
             )
         self._conn.commit()
 
-    # ---- tx sync marker & counters ------------------------------------ #
+    # ---- tx sync marker & counters (thin wrappers over skeleton meta) -- #
     def get_last_tx_sync(self):
-        return self._get_meta("last_tx_sync")
+        return self.get_meta("last_tx_sync")
 
     def set_last_tx_sync(self, date_str):
-        self._set_meta("last_tx_sync", date_str)
-        self._conn.commit()
+        self.set_meta("last_tx_sync", date_str)
 
     def set_last_full_sync(self, date_str):
-        self._set_meta("last_full_sync", date_str)
-        self._conn.commit()
+        self.set_meta("last_full_sync", date_str)
 
     def increment_api_calls(self, n=1):
-        current = int(self._get_meta("api_call_count") or 0)
-        self._set_meta("api_call_count", current + n)
-        self._conn.commit()
+        self.increment_counter("api_call_count", n)
 
-    # ---- status & maintenance ----------------------------------------- #
+    # ---- status & maintenance (skeleton-backed) ------------------------ #
     def status(self):
-        c = self._conn
-        out = {}
-        for table in ("accounts", "holdings", "transactions", "budgets",
-                      "cashflow", "recurring"):
-            out[f"{table}_rows"] = c.execute(
-                f"SELECT COUNT(*) FROM {table}"
-            ).fetchone()[0]
-            age = c.execute(
-                f"SELECT MAX(fetched_at) FROM {table}"
-            ).fetchone()[0]
-            out[f"{table}_last_sync"] = age
-        out["api_call_count"] = int(self._get_meta("api_call_count") or 0)
-        out["last_full_sync"] = self._get_meta("last_full_sync")
-        out["last_tx_sync"] = self._get_meta("last_tx_sync")
-        out["schema_version"] = self._get_meta("schema_version")
-        if self.db_path != ":memory:" and os.path.exists(self.db_path):
-            out["db_size_bytes"] = os.path.getsize(self.db_path)
-        else:
-            out["db_size_bytes"] = 0
-        out["db_path"] = self.db_path
+        out = super().status()
+        out["last_full_sync"] = self.get_meta("last_full_sync")
+        out["last_tx_sync"] = self.get_meta("last_tx_sync")
         return out
 
-    def prune_stale(self):
-        """Delete volatile rows older than 2x their TTL. Historical tables
-        (transactions, budgets, cashflow) are intentionally left untouched."""
-        now = int(time.time())
-        deleted = 0
-        for table, ttl in _TABLE_TTL.items():
-            cutoff = now - 2 * ttl
-            deleted += self._conn.execute(
-                f"DELETE FROM {table} WHERE fetched_at < ?", (cutoff,)
-            ).rowcount
-        self._conn.commit()
-        return deleted
-
     def clear(self, include_user_buckets=False):
-        """Empty all synced data so the next fetch re-pulls and re-infers
-        everything (incl. tax buckets under current classifier logic).
-
-        User-corrected tax buckets (auto_classified=0) are the one thing the
-        API can't regenerate, so they survive unless include_user_buckets is
-        set. Lifetime counters (api_call_count, schema_version) are kept;
-        sync markers are reset.
-        """
-        counts = {}
-        for table in ("accounts", "holdings", "transactions", "budgets",
-                      "cashflow", "recurring"):
-            counts[table] = self._conn.execute(f"DELETE FROM {table}").rowcount
-        if include_user_buckets:
-            counts["tax_buckets"] = self._conn.execute(
-                "DELETE FROM account_tax_buckets").rowcount
-            counts["user_buckets_kept"] = 0
-        else:
-            counts["tax_buckets"] = self._conn.execute(
-                "DELETE FROM account_tax_buckets WHERE auto_classified = 1"
-            ).rowcount
-            counts["user_buckets_kept"] = self._conn.execute(
-                "SELECT COUNT(*) FROM account_tax_buckets").fetchone()[0]
-        self._conn.execute(
-            "DELETE FROM meta WHERE key IN ('last_full_sync', 'last_tx_sync')")
-        self._conn.commit()
-        try:
-            self._conn.execute("VACUUM")
-        except sqlite3.Error:
-            pass
+        """Schema-driven clear (see skill_schema.SCHEMA): protected rows are
+        user-corrected tax buckets (auto_classified=0); include_user_buckets
+        maps to the skeleton's force flag. Returns counts keyed for fetch.py
+        (tax_buckets / user_buckets_kept aliases)."""
+        counts = super().clear(force=include_user_buckets)
+        counts["tax_buckets"] = counts.get("account_tax_buckets", 0)
+        counts["user_buckets_kept"] = counts.get("protected_rows_kept", 0)
         return counts
-
-    def close(self):
-        if self._conn is not None:
-            try:
-                self._conn.close()
-            finally:
-                self._conn = None
 
 
 # --------------------------------------------------------------------------- #
@@ -567,12 +353,19 @@ def classify_error(exc):
 # --------------------------------------------------------------------------- #
 # Client
 # --------------------------------------------------------------------------- #
-DEFAULT_DATA_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"
-)
+_SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Persistent across chat sessions: env override > /mnt/user-data (cloud) >
+# ~/.claude-skills (desktop) > skill-relative data/ (per-session fallback).
+# Skill-relative data/ dies with each session's container copy — field finding.
+DEFAULT_DATA_DIR = resolve_data_dir(
+    "monarch-money", _SKILL_DIR, env_var="MONARCH_MONEY_DATA_DIR")
+# First-run bootstrap: auth files bundled via `build.ps1 -IncludeAuth` ride in
+# the package's data/bootstrap/ and are copied into the persistent dir once.
+bootstrap_data(DEFAULT_DATA_DIR, _SKILL_DIR)
 DEFAULT_SESSION_PATH = os.path.join(DEFAULT_DATA_DIR, "session.pickle")
 DEFAULT_CRED_PATH = os.path.join(DEFAULT_DATA_DIR, "credentials.json")
 DEFAULT_COOKIE_PATH = os.path.join(DEFAULT_DATA_DIR, "cookie_session.json")
+DEFAULT_ENV_PATH = os.path.join(DEFAULT_DATA_DIR, ".env")
 DEFAULT_DB_PATH = os.path.join(DEFAULT_DATA_DIR, "monarch_cache.db")
 
 MONARCH_ORIGIN = "https://app.monarch.com"
@@ -793,13 +586,58 @@ class MonarchClient:
         return cls(mm, MonarchCache(cache_path))
 
     @classmethod
+    def from_env(cls, env_path=DEFAULT_ENV_PATH, cache_path=DEFAULT_DB_PATH,
+                 session_path=DEFAULT_SESSION_PATH):
+        """Authenticate from a .env file in the persistent data dir — the
+        zero-touch desktop pattern: each new chat session reads it and
+        re-auths without asking. Keys (either group):
+          MONARCH_COOKIES="session_id=...; csrftoken=..."   (preferred)
+          MONARCH_EMAIL / MONARCH_PASSWORD / MONARCH_MFA_SECRET
+        """
+        import asyncio
+        from monarchmoney import MonarchMoney
+        env = load_dotenv(env_path)
+        if not env:
+            raise AuthExpiredError("No .env auth file.")
+        mm = MonarchMoney(session_file=session_path)
+        cookies = env.get("MONARCH_COOKIES")
+        if cookies:
+            pairs = {}
+            for part in cookies.split(";"):
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    pairs[k.strip()] = v.strip()
+            session_id = pairs.get("session_id", pairs.get("sessionid"))
+            csrftoken = pairs.get("csrftoken")
+            if not (session_id and csrftoken):
+                raise AuthExpiredError(
+                    "MONARCH_COOKIES in .env must contain session_id and csrftoken.")
+            apply_cookie_auth(mm, csrftoken, session_id)
+            return cls(mm, MonarchCache(cache_path))
+        email = env.get("MONARCH_EMAIL")
+        password = env.get("MONARCH_PASSWORD")
+        if not (email and password):
+            raise AuthExpiredError(".env has no usable Monarch auth keys.")
+        try:
+            asyncio.run(mm.login(
+                email=email, password=password,
+                use_saved_session=False, save_session=False,
+                mfa_secret_key=env.get("MONARCH_MFA_SECRET"),
+            ))
+            mm.save_session(session_path)
+        except Exception as exc:  # noqa: BLE001
+            raise classify_error(exc)
+        return cls(mm, MonarchCache(cache_path))
+
+    @classmethod
     def ensure_authenticated(cls, session_path=DEFAULT_SESSION_PATH,
                              cred_path=DEFAULT_CRED_PATH,
                              cache_path=DEFAULT_DB_PATH,
-                             cookie_path=DEFAULT_COOKIE_PATH):
+                             cookie_path=DEFAULT_COOKIE_PATH,
+                             env_path=DEFAULT_ENV_PATH):
         """Try a saved token session, then a saved cookie session, then
-        persisted credentials; else raise AuthExpiredError. Never retries a
-        dead session."""
+        persisted credentials, then the .env file; else raise
+        AuthExpiredError. Never retries a dead session."""
         try:
             return cls.from_session(session_path, cache_path)
         except MonarchSkillError:
@@ -810,8 +648,13 @@ class MonarchClient:
             pass
         if os.path.exists(cred_path):
             return cls.from_credentials(cred_path, cache_path, session_path)
+        try:
+            return cls.from_env(env_path, cache_path, session_path)
+        except MonarchSkillError:
+            pass
         raise AuthExpiredError(
             "Monarch session expired. Re-run: python scripts/setup_auth.py "
             "--email ... --mfa-code CODE (or --token / --csrf-token + "
-            "--session-id)"
+            "--session-id), or put MONARCH_COOKIES in "
+            f"{env_path} for zero-touch reauth."
         )

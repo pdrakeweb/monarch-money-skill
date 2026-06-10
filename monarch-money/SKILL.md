@@ -1,6 +1,6 @@
 ---
 name: "monarch-money"
-version: "0.4.0"
+version: "0.5.0"
 description: >
   Access and analyze the user's Monarch Money financial data: accounts, balances,
   net worth, investment holdings, transactions, budgets, and cashflow. Use this
@@ -14,11 +14,24 @@ description: >
 
 Surfaces the user's real Monarch Money data for conversational analysis. Scripts
 sync data into a local SQLite cache and print compact Markdown summaries. **For
-any real analysis, query the SQLite cache directly** (`data/monarch_cache.db`)
-with SQL/pandas — don't ask the scripts to dump raw rows.
+any real analysis, query the SQLite cache directly** with SQL/pandas — don't
+ask the scripts to dump raw rows.
 
 All commands run from the skill directory:
 `python scripts/fetch.py <command> [flags]`
+
+## 0. Where data lives (persists across chat sessions)
+
+The cache, session, and auth files live in a **persistent data directory**,
+NOT the skill-relative `data/` (which dies with each session's container):
+`/mnt/user-data/.claude-skills/monarch-money/` in cloud sessions,
+`~/.claude-skills/monarch-money/` on desktop, `$MONARCH_MONEY_DATA_DIR` to
+override. Get the exact path from `python scripts/fetch.py status` (the
+`Database:` line) and query THAT file. Auth done in a previous session is
+picked up automatically — check `auth-status` before asking the user to log
+in again. A `.env` there with `MONARCH_COOKIES="session_id=…; csrftoken=…"`
+(or `MONARCH_EMAIL`/`MONARCH_PASSWORD`/`MONARCH_MFA_SECRET`) gives every new
+session zero-touch reauth as a last-resort fallback.
 
 ## 1. Decision tree
 
@@ -283,3 +296,21 @@ temp-dir copy (analysis still works; it just won't persist).
 - Hidden and closed accounts are excluded from net worth automatically.
 - Detailed method signatures, return fields, and ready-made SQL live in
   `references/api_surface.md`.
+
+## 9. Skeleton vs skill (where fixes go)
+
+This skill is built on **claude-skill-skeleton**
+(github.com/pdrakeweb/claude-skill-skeleton). When fixing something, route
+the change to the right layer:
+
+- **Skeleton files** (fix UPSTREAM in the skeleton repo, then merge down via
+  `git fetch skeleton && git merge skeleton/main`):
+  `scripts/skill_cache.py` (SQLite cache, TTL, schema-driven clear-cache),
+  `scripts/skill_common.py` (errors, UTF-8, persistent data-dir resolution,
+  bootstrap, .env loader), and the repo-root `build.ps1` / `build.sh` /
+  `deploy.ps1` / `validate_setup.py`.
+- **Monarch-specific files** (fix HERE): `scripts/skill_schema.py` (version,
+  DDL, TTLs, protected tax-bucket rows), `scripts/monarch_client.py`
+  (MonarchCache write methods, tax-bucket inference, auth flows, GuardedMonarch
+  write policy), `scripts/fetch.py`, `scripts/setup_auth.py`, this file, and
+  `references/`.

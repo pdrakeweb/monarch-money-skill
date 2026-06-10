@@ -40,7 +40,7 @@ build.ps1 / deploy.ps1  package to monarch-money.zip / push to Claude Desktop
 The skill carries a semver version in TWO places that must always match
 (build.ps1/build.sh refuse to package on mismatch; a unit test checks too):
 
-1. `monarch-money\scripts\monarch_client.py` → `SKILL_VERSION = "X.Y.Z"`
+1. `monarch-money\scripts\skill_schema.py` → `SKILL_VERSION = "X.Y.Z"`
 2. `monarch-money\SKILL.md` frontmatter → `version: "X.Y.Z"`
 
 Before committing any change under `monarch-money\`:
@@ -53,14 +53,59 @@ Update both files, commit, then tag: `git tag vX.Y.Z`. The user verifies the
 installed version by asking the skill's Claude, which runs
 `python scripts/fetch.py version` — if that lags the repo, the deploy is stale.
 
+## Skeleton usage — what's upstream vs what's monarch's
+
+This repo adopted **claude-skill-skeleton** (remote `skeleton`,
+github.com/pdrakeweb/claude-skill-skeleton). Pull improvements with:
+
+```powershell
+git fetch skeleton
+git merge skeleton/main
+```
+
+**Skeleton-owned files — fix in the skeleton repo first, push, then merge
+down here** (editing them only in this repo forks them silently):
+- `build.ps1`, `build.sh`, `deploy.ps1`, `validate_setup.py` (repo root)
+- `monarch-money\scripts\skill_cache.py` — SkillCache (schema-driven SQLite
+  cache, TTL freshness, counters, status, clear/prune)
+- `monarch-money\scripts\skill_common.py` — SkillError base, UTF-8 fix,
+  resolve_data_dir/bootstrap_data (cross-session persistence), load_dotenv
+
+**Monarch-owned files — fix here:**
+- `monarch-money\scripts\skill_schema.py` — SKILL_VERSION + SCHEMA (DDL,
+  TTLs, protected tax-bucket rows)
+- `monarch-money\scripts\monarch_client.py` — MonarchCache write methods,
+  tax-bucket inference, auth flows (token/cookie/credentials/.env),
+  GuardedMonarch write policy, error classification
+- `monarch-money\scripts\fetch.py`, `setup_auth.py`, `SKILL.md`, `references\`
+
+Note: the skeleton sample dir (`my-skill/`), its `cli.py` scaffold, and
+`tests/test_skeleton.py` were intentionally dropped in the adoption merge —
+monarch's `fetch.py` and test suite predate them and cover the same ground.
+Expect modify/delete conflicts on those paths in future skeleton merges;
+resolve by deleting (`git rm`).
+
+## Persistence model (why data\ is NOT the data dir)
+
+Skill-relative `data\` dies with each chat session (sessions get a fresh copy
+of the skill). Runtime data lives in the persistent dir resolved by
+`skill_common.resolve_data_dir`: `$MONARCH_MONEY_DATA_DIR` override >
+`/mnt/user-data/.claude-skills/monarch-money/` (cloud) >
+`~/.claude-skills/monarch-money/` (desktop). Zero-touch reauth: a `.env`
+there with `MONARCH_COOKIES` (or email/password/MFA secret) is the final
+ensure_authenticated fallback. Cross-device auth: `.\build.ps1 -IncludeAuth`
+bundles auth files into the package's `data\bootstrap\` (opt-in; secrets ship
+in the uploaded zip), which new sessions copy into their persistent dir on
+first run.
+
 ## Invariants (don't break these)
 
-- **`gql==4.0`** is pinned transitively by `monarchmoneycommunity==1.3.2`. Never
+- **`gql==4.0`** is pinned transitively by `monarchmoneycommunity==1.4.0`. Never
   override it.
 - Scripts print **compact Markdown only** — never raw JSON/row dumps. Analysis
-  happens by querying `data/monarch_cache.db` directly.
+  happens by querying the SQLite cache in the persistent data dir directly.
 - **No secrets in stdout** — never print password, session token, or MFA secret.
-  Option B credentials live only in `data/credentials.json` (git-ignored).
+  Option B credentials live only in the persistent data dir (git-ignored).
 - Auth failures are **fatal** — classify and exit 1; never retry a dead session.
 - The skill runs in Anthropic's Linux/UTF-8 container; `fetch.py` reconfigures
   stdout to UTF-8 so the ✓/⚠/↑ glyphs don't crash a cp1252 Windows console.
