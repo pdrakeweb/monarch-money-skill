@@ -26,22 +26,41 @@ summaries**; Claude queries the SQLite cache directly for real analysis.
 - `pip install -r requirements.txt` (pins `monarchmoneycommunity==1.3.2`, which
   in turn pins `gql==4.0` — **do not override**).
 
-## First-time auth (Option A — recommended)
+## First-time auth
 
-Session-only login. Your password is **never** written to disk.
+**You don't need Python installed locally.** The skill runs in Anthropic's
+container, which has Python — just ask Claude to set up Monarch auth in a
+conversation where the skill is enabled, and it runs `setup_auth.py` for you.
+Three options, by credential footprint:
+
+### Option C — session token (recommended; no password shared)
+
+Copy your existing Monarch web-session token and give Claude **only the token**:
+
+1. Log in at app.monarchmoney.com in a desktop browser.
+2. DevTools (F12) → **Network** → click any `graphql` request →
+   Request Headers → copy the value after `Authorization: Token `.
+3. Paste the token into the chat (or run locally:
+   `python monarch-money/scripts/setup_auth.py --token YOUR_TOKEN`).
+
+Your password and MFA secret never leave your machine. When the token expires,
+repeat with a fresh one.
+
+### Option A — email + password + TOTP code
 
 ```
 python monarch-money/scripts/setup_auth.py \
     --email you@example.com --password 'YOUR_PASSWORD' --mfa-code 123456
 ```
 
-Saves `monarch-money/data/session.pickle`. Re-run with a fresh TOTP code when the
-session expires (typically weeks to months).
+Saves `monarch-money/data/session.pickle`; your password is **never** written to
+disk. If you do this through chat instead of locally, note your password will
+appear in the conversation history (consider rotating it after), and TOTP codes
+expire in 30 seconds — send a freshly generated code.
 
-### Option B (zero-touch reauth, opt-in)
+### Option B — persisted credentials (zero-touch reauth, opt-in)
 
-Stores credentials so the skill can re-authenticate unattended. Only use this if
-you want unattended operation:
+Stores credentials so the skill can re-authenticate unattended:
 
 ```
 python monarch-money/scripts/setup_auth.py \

@@ -39,26 +39,64 @@ A single-domain question (just balances, just this month's budget) can use the
 matching subcommand instead of `sync-all`. Caches are TTL-guarded, so re-running
 is cheap and won't re-hit the API unless stale or `--refresh` is passed.
 
-## 2. First-run setup (Option A — recommended)
+## 2. First-run setup
 
-Session-only auth. The password is **never** written to disk; re-run with a
-fresh TOTP code when the session expires (typically weeks–months).
+The user does NOT need Python locally — `setup_auth.py` runs right here in the
+skill container. Pick the option that matches what the user is comfortable
+sharing, and state the trade-off before they send anything sensitive.
+
+### Option C — session token (recommended; no password ever shared)
+
+The user copies their existing Monarch web-session token and pastes **only the
+token** into the chat. Their password and MFA secret never leave their machine.
+
+Walk them through getting the token:
+1. Log in at **app.monarchmoney.com** in a desktop browser.
+2. Open DevTools (F12) → **Network** tab → click any request to
+   `api.monarchmoney.com/graphql`.
+3. In Request Headers, copy the value after `Authorization: Token ` —
+   a long hex string. (Alternatively: Application → Local Storage →
+   `persist:root` → inside the `user` entry, the `token` field.)
+4. Paste it in the chat.
+
+Then run:
+```
+python scripts/setup_auth.py --token THEIR_TOKEN
+```
+The script validates the token with one lightweight API call before saving
+`data/session.pickle`. When the token eventually expires (`AuthExpiredError`),
+ask for a fresh one.
+
+### Option A — email + password + TOTP code
+
+The user pastes email, password, and a **current** 6-digit MFA code into chat.
+Caveats to state up front: (a) the password transits this conversation and will
+sit in the chat history — suggest rotating it afterward if they're
+uncomfortable; (b) TOTP codes expire every 30 seconds, so run the command
+**immediately** after they send the code, and ask them to send a freshly
+generated one.
 
 ```
 python scripts/setup_auth.py --email you@example.com \
     --password 'YOUR_PASSWORD' --mfa-code 123456
 ```
 
-This logs in and saves `data/session.pickle` only.
+Saves `data/session.pickle` only — the password is **never** written to disk.
+If the code expired mid-flight (login failure), just ask for a new code and
+re-run; nothing is left in a bad state.
 
-**Option B (zero-touch, opt-in — confirm with the user first):** stores email +
-password + TOTP secret in `data/credentials.json` so the skill can silently
-re-authenticate. Only use this if the user explicitly asks for unattended reauth:
+### Option B — persisted credentials (zero-touch, opt-in)
+
+Stores email + password + TOTP secret in `data/credentials.json` so the skill
+silently re-authenticates forever. **Only use this if the user explicitly asks
+for unattended reauth and confirms they understand the credentials are stored**:
 
 ```
 python scripts/setup_auth.py --email you@example.com \
     --password 'YOUR_PASSWORD' --mfa-secret-key BASE32SECRET --persist-credentials
 ```
+
+Revocation: delete `data/credentials.json` and rotate the Monarch password.
 
 ## 3. Command reference
 
@@ -75,7 +113,9 @@ python scripts/setup_auth.py --email you@example.com \
 | `status` | Cache row counts, ages, lifetime API calls | — |
 | `auth-status` | Session age + expiry estimate | — |
 
-Global: `--refresh` bypasses TTL; `--mock` loads bundled fixtures (offline demo).
+Global: `--refresh` bypasses TTL. (`--mock` exists for development against the
+repo's `tests/fixtures/` — those fixtures are not packaged in the deployed
+skill, so don't offer it to the user.)
 
 ## 4. Worked examples
 
@@ -153,7 +193,7 @@ Say this plainly; don't imply lot-level precision the data can't support.
 
 | Symptom (error JSON on stdout / stderr) | Meaning | Fix |
 |------|---------|-----|
-| `AuthExpiredError` | Session dead / 401 | Re-run `setup_auth.py` with a fresh `--mfa-code` |
+| `AuthExpiredError` | Session dead / 401 | Re-run `setup_auth.py` — ask the user for a fresh token (Option C) or a fresh `--mfa-code` (Option A) |
 | `SchemaChangedError` | Monarch GraphQL changed | `pip install -U monarchmoneycommunity` |
 | `NetworkError` | Can't reach api.monarch.com | Check container network egress |
 

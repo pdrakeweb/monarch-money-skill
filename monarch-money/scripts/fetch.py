@@ -72,19 +72,27 @@ def _today():
 
 
 # --------------------------------------------------------------------------- #
-# Normalisers: source (fixture camelCase / API) -> internal snake_case
+# Normalisers: source (fixture camelCase / live GraphQL) -> internal snake_case
+#
+# The live API nests most labels as objects ({"name": ...}); the fixtures use
+# flat strings. _name_of() collapses both to a plain string so the SQLite cache
+# never stores a dict repr.
 # --------------------------------------------------------------------------- #
+def _name_of(v):
+    """Flatten a GraphQL label that may be a string or a {name: ...} object."""
+    if isinstance(v, dict):
+        return v.get("name")
+    return v
+
+
 def normalize_account(a):
     bal = a.get("balance", a.get("currentBalance"))
     return {
         "id": a.get("id"),
         "name": a.get("name") or a.get("displayName"),
-        "type": a.get("type") or (a.get("type", {}) or {}).get("name")
-                if isinstance(a.get("type"), dict) else a.get("type"),
-        "subtype": a.get("subtype") if not isinstance(a.get("subtype"), dict)
-                   else (a.get("subtype") or {}).get("name"),
-        "institution": a.get("institution") if not isinstance(a.get("institution"), dict)
-                       else (a.get("institution") or {}).get("name"),
+        "type": _name_of(a.get("type")),
+        "subtype": _name_of(a.get("subtype")),
+        "institution": _name_of(a.get("institution")),
         "balance": bal,
         "display_balance": a.get("displayBalance", bal),
         "currency": a.get("currency", "USD"),
@@ -96,28 +104,53 @@ def normalize_account(a):
 
 
 def normalize_holding(h):
+    # Live shape: portfolio.aggregateHoldings.edges[].node =
+    #   {quantity, basis, totalValue, security{ticker, name, currentPrice}}
+    sec = h.get("security") or {}
     return {
-        "ticker": h.get("ticker"),
-        "name": h.get("name"),
+        "ticker": h.get("ticker") or sec.get("ticker"),
+        "name": h.get("name") or sec.get("name"),
         "quantity": h.get("quantity"),
-        "value": h.get("value"),
-        "price": h.get("price"),
-        "cost_basis": h.get("costBasis", h.get("cost_basis")),
+        "value": h.get("value", h.get("totalValue")),
+        "price": h.get("price", sec.get("currentPrice")),
+        "cost_basis": h.get("costBasis", h.get("cost_basis", h.get("basis"))),
     }
 
 
+def extract_holding_nodes(data):
+    """Pull holding nodes out of the live get_account_holdings() response."""
+    try:
+        edges = data["portfolio"]["aggregateHoldings"]["edges"]
+        return [e["node"] for e in edges if e.get("node")]
+    except (KeyError, TypeError):
+        # Fall back to any flat list the response (or a fixture) may carry.
+        if isinstance(data, list):
+            return data
+        return data.get("holdings", []) if isinstance(data, dict) else []
+
+
 def normalize_txn(t):
+    # Live shape: merchant{name}, category{name, group{...}}, pending,
+    # account{id}. Fixtures: flat merchantName/category/categoryGroup/isPending.
+    cat = t.get("category")
+    group = t.get("categoryGroup", t.get("category_group"))
+    if isinstance(cat, dict):
+        group = group or _name_of(cat.get("group"))
+        cat = cat.get("name")
+    acct = t.get("accountId", t.get("account_id"))
+    if acct is None and isinstance(t.get("account"), dict):
+        acct = t["account"].get("id")
     return {
         "id": t.get("id"),
-        "account_id": t.get("accountId", t.get("account_id")),
+        "account_id": acct,
         "date": t.get("date"),
         "amount": t.get("amount"),
-        "merchant": t.get("merchantName", t.get("merchant")),
-        "category": t.get("category"),
-        "category_group": t.get("categoryGroup", t.get("category_group")),
-        "tags": t.get("tags", []),
+        "merchant": t.get("merchantName") or _name_of(t.get("merchant")),
+        "category": cat,
+        "category_group": group,
+        "tags": [_name_of(x) for x in (t.get("tags") or [])],
         "notes": t.get("notes", ""),
-        "is_pending": t.get("isPending", t.get("is_pending", False)),
+        "is_pending": t.get("isPending", t.get("is_pending", t.get("pending", False))),
     }
 
 
@@ -132,13 +165,20 @@ def normalize_budget(b):
 
 
 def normalize_recurring(r):
+    # Live shape: {stream{id, frequency, merchant{name}}, date, amount,
+    # account{id}}. Fixtures: flat id/merchant/frequency/next_date.
+    stream = r.get("stream") or {}
+    acct = r.get("accountId", r.get("account_id"))
+    if acct is None and isinstance(r.get("account"), dict):
+        acct = r["account"].get("id")
     return {
-        "id": r.get("id"),
-        "merchant": r.get("merchant"),
-        "amount": r.get("amount"),
-        "frequency": r.get("frequency"),
-        "next_date": r.get("next_date", r.get("nextDate")),
-        "account_id": r.get("accountId", r.get("account_id")),
+        "id": r.get("id") or stream.get("id") or r.get("transactionId"),
+        "merchant": r.get("merchant") if isinstance(r.get("merchant"), str)
+                    else _name_of(stream.get("merchant")) or _name_of(r.get("merchant")),
+        "amount": r.get("amount", stream.get("amount")),
+        "frequency": r.get("frequency", stream.get("frequency")),
+        "next_date": r.get("next_date", r.get("nextDate", r.get("date"))),
+        "account_id": acct,
     }
 
 
@@ -183,15 +223,16 @@ def sync_holdings(ctx):
             by_acct.setdefault(h.get("accountId"), []).append(normalize_holding(h))
         for acct_id, rows in by_acct.items():
             cache.write_holdings(acct_id, rows)
+        cache.increment_api_calls()
     else:
         inv = cache._conn.execute(
             "SELECT id FROM accounts WHERE type='investment'"
         ).fetchall()
         for (acct_id,) in inv:
             data = asyncio.run(ctx.client.mm.get_account_holdings(acct_id))
-            rows = data.get("holdings", data) if isinstance(data, dict) else data
-            cache.write_holdings(acct_id, [normalize_holding(h) for h in (rows or [])])
-    cache.increment_api_calls()
+            nodes = extract_holding_nodes(data)
+            cache.write_holdings(acct_id, [normalize_holding(h) for h in nodes])
+            cache.increment_api_calls()  # one GraphQL call per account
     return True
 
 
@@ -207,14 +248,26 @@ def sync_transactions(ctx):
             start = (_dt.date.fromisoformat(last) - _dt.timedelta(days=3))
         else:
             start = _today() - _dt.timedelta(days=ctx.days)
-        data = asyncio.run(ctx.client.mm.get_transactions(
-            start_date=start.isoformat(), end_date=_today().isoformat()))
-        raw = (data.get("allTransactions", {}).get("results", [])
-               if isinstance(data, dict) else data) or []
+        # get_transactions caps at `limit` per call — page until exhausted.
+        raw = []
+        offset = 0
+        page = 100
+        while True:
+            data = asyncio.run(ctx.client.mm.get_transactions(
+                limit=page, offset=offset,
+                start_date=start.isoformat(), end_date=_today().isoformat()))
+            batch = (data.get("allTransactions", {}).get("results", [])
+                     if isinstance(data, dict) else data) or []
+            raw.extend(batch)
+            cache.increment_api_calls()
+            if len(batch) < page:
+                break
+            offset += page
     rows = [normalize_txn(t) for t in raw]
     cache.write_transactions(rows)
     cache.set_last_tx_sync(_today().isoformat())
-    cache.increment_api_calls()
+    if ctx.mock:
+        cache.increment_api_calls()  # live path counts per page above
     return True
 
 
@@ -252,6 +305,23 @@ def _extract_budget_rows(data):
     return out
 
 
+def _month_bounds(period):
+    """(first-day, last-day) ISO dates for a YYYY-MM period string."""
+    year, month = int(period[:4]), int(period[5:7])
+    first = _dt.date(year, month, 1)
+    if month == 12:
+        nxt = _dt.date(year + 1, 1, 1)
+    else:
+        nxt = _dt.date(year, month + 1, 1)
+    return first.isoformat(), (nxt - _dt.timedelta(days=1)).isoformat()
+
+
+def _shift_month(period, delta):
+    year, month = int(period[:4]), int(period[5:7])
+    total = year * 12 + (month - 1) + delta
+    return f"{total // 12:04d}-{total % 12 + 1:02d}"
+
+
 def sync_cashflow(ctx, months):
     cache = ctx.cache
     if not _need_sync(cache, "cashflow", TTL_4H, ctx.refresh):
@@ -260,19 +330,28 @@ def sync_cashflow(ctx, months):
         data = load_fixture(ctx.fixtures_dir, "cashflow")
         for cf in data:
             cache.write_cashflow(cf, cf["period"])
-    else:
-        summary = asyncio.run(ctx.client.mm.get_cashflow_summary())
-        period = _today().strftime("%Y-%m")
+        cache.increment_api_calls()
+        return True
+    # Live: one summary call per requested month (closed months only refresh
+    # when missing — they never change).
+    current = _today().strftime("%Y-%m")
+    for delta in range(-(months - 1), 1):
+        period = _shift_month(current, delta)
+        if period != current and cache.is_fresh("cashflow", "period", period, 10**12):
+            continue  # closed month already cached — permanent
+        start, end = _month_bounds(period)
+        summary = asyncio.run(ctx.client.mm.get_cashflow_summary(
+            start_date=start, end_date=end))
         s = (summary.get("summary", [{}])[0].get("summary", {})
              if isinstance(summary, dict) else {})
-        income = s.get("sumIncome", 0.0)
-        expense = abs(s.get("sumExpense", 0.0))
+        income = s.get("sumIncome", 0.0) or 0.0
+        expense = abs(s.get("sumExpense", 0.0) or 0.0)
         savings = s.get("savings", income - expense)
         rate = round(savings / income * 100, 1) if income else 0.0
         cache.write_cashflow(
             {"income": income, "expense": expense, "savings": savings,
              "savings_rate": rate, "by_category": {}, "by_group": {}}, period)
-    cache.increment_api_calls()
+        cache.increment_api_calls()
     return True
 
 
@@ -419,14 +498,23 @@ def render_budgets(cache, period):
         print("All categories within budget.")
 
 
-def render_cashflow(cache, months):
-    rows = cache._conn.execute(
-        "SELECT period, income, expense, savings, savings_rate FROM cashflow "
-        "ORDER BY period DESC LIMIT ?", (months,)
-    ).fetchall()
+def render_cashflow(cache, months, month=None):
+    if month:
+        rows = cache._conn.execute(
+            "SELECT period, income, expense, savings, savings_rate FROM cashflow "
+            "WHERE period = ?", (month,)
+        ).fetchall()
+        months = 1
+    else:
+        rows = cache._conn.execute(
+            "SELECT period, income, expense, savings, savings_rate FROM cashflow "
+            "ORDER BY period DESC LIMIT ?", (months,)
+        ).fetchall()
     age = cache._conn.execute("SELECT MAX(fetched_at) FROM cashflow").fetchone()[0]
     if not rows:
-        print("## Cashflow\n\nNo cashflow data cached.")
+        target = month or "requested window"
+        print(f"## Cashflow\n\nNo cashflow data cached for {target}. "
+              f"Run `fetch.py cashflow --months N --refresh` to sync.")
         return
     if months == 1:
         period, income, expense, savings, rate = rows[0]
@@ -468,6 +556,10 @@ def render_net_worth(cache):
         "SELECT type, balance FROM accounts WHERE is_hidden=0 AND is_closed=0"
     ).fetchall()
     age = cache._conn.execute("SELECT MAX(fetched_at) FROM accounts").fetchone()[0]
+    if not rows:
+        print("## Net Worth\n\nNo accounts cached yet — run "
+              "`python scripts/fetch.py accounts` first.")
+        return
     by_type = {}
     for typ, bal in rows:
         by_type[typ] = by_type.get(typ, 0) + (bal or 0)
@@ -551,8 +643,9 @@ def dispatch(args, cache, client):
         period, _ = sync_budgets(ctx, period)
         render_budgets(cache, period)
     elif cmd == "cashflow":
-        sync_cashflow(ctx, args.months)
-        render_cashflow(cache, args.months)
+        n_months = max(args.months, 1)
+        sync_cashflow(ctx, n_months)
+        render_cashflow(cache, n_months, month=args.month)
     elif cmd == "recurring":
         sync_recurring(ctx)
         render_recurring(cache)

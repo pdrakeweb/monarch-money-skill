@@ -83,3 +83,44 @@ def test_mfa_required_calls_multi_factor(tmp_path):
 def test_error_classification():
     assert isinstance(classify_error(LoginFailedException("bad")), AuthExpiredError)
     assert isinstance(classify_error(ConnectionError("refused")), NetworkError)
+
+
+def test_option_c_token_saves_session(tmp_path):
+    session_path, cred_path = _paths(tmp_path)
+    mm = _fake_mm(session_path)
+    result = setup_auth.run_setup(
+        token="tok_abc123", session_path=session_path, cred_path=cred_path, mm=mm,
+    )
+    mm.set_token.assert_called_once_with("tok_abc123")
+    mm.get_subscription_details.assert_called_once()  # validation ping
+    mm.login.assert_not_called()
+    assert os.path.exists(session_path)
+    assert not os.path.exists(cred_path)
+    assert result["method"] == "token"
+
+
+def test_option_c_token_not_in_stdout(tmp_path, capsys, monkeypatch):
+    session_path, cred_path = _paths(tmp_path)
+    monkeypatch.setattr(setup_auth, "run_setup", lambda **kw: {
+        "session_path": session_path, "persisted_credentials": False,
+        "method": "token"})
+    code = setup_auth.main(["--token", "tok_supersecret_456"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "tok_supersecret_456" not in out
+
+
+def test_token_with_persist_rejected(tmp_path):
+    from monarch_client import MonarchSkillError
+    session_path, cred_path = _paths(tmp_path)
+    mm = _fake_mm(session_path)
+    with pytest.raises(MonarchSkillError):
+        setup_auth.run_setup(
+            token="tok_abc", persist=True,
+            session_path=session_path, cred_path=cred_path, mm=mm,
+        )
+
+
+def test_no_token_and_no_credentials_errors(capsys):
+    with pytest.raises(SystemExit):
+        setup_auth.main([])

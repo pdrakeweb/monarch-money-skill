@@ -13,6 +13,13 @@ Option B (opt-in, --persist-credentials):
   so the skill can re-authenticate with zero touch. SKILL.md requires explicit
   user confirmation before this path is used.
 
+Option C (token — no password ever shared):
+    python scripts/setup_auth.py --token MONARCH_SESSION_TOKEN
+  Takes an existing session token copied from the Monarch web app (browser
+  DevTools), validates it with a lightweight API call, and saves the session
+  pickle. No email, password, or MFA material is involved. This is the
+  recommended path when auth is set up inside the claude.ai container.
+
 Nothing in this module ever prints the password, session token, or MFA secret.
 """
 import argparse
@@ -77,25 +84,45 @@ def write_credentials(cred_path, email, password, mfa_secret_key=None):
         pass  # best-effort on platforms without POSIX perms
 
 
-def run_setup(email, password, mfa_code=None, persist=False,
+def run_setup(email=None, password=None, mfa_code=None, persist=False,
               session_path=DEFAULT_SESSION_PATH, cred_path=DEFAULT_CRED_PATH,
-              mfa_secret_key=None, mm=None):
-    """Perform login, save the session, optionally persist credentials.
-
-    Returns a small status dict. Never returns or prints secret material.
+              mfa_secret_key=None, token=None, mm=None):
+    """Perform login (or adopt a token), save the session, optionally persist
+    credentials. Returns a small status dict. Never returns or prints secret
+    material.
     """
-    os.makedirs(os.path.dirname(os.path.abspath(session_path)), exist_ok=True)
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(session_path)), exist_ok=True)
+    except PermissionError:
+        raise MonarchSkillError(
+            f"Cannot create the session directory at {os.path.dirname(session_path)} "
+            "(read-only filesystem). Pass --session-path to a writable location."
+        )
 
     if mm is None:
         from monarchmoney import MonarchMoney
         mm = MonarchMoney(session_file=session_path)
 
-    perform_login(mm, email, password, mfa_code=mfa_code,
-                  mfa_secret_key=mfa_secret_key)
+    if token:
+        # Option C: adopt an existing session token. Validate it with one
+        # lightweight read before saving so a bad paste fails loudly here
+        # rather than on the first real query.
+        mm.set_token(token)
+        _maybe_run(mm.get_subscription_details())
+    else:
+        perform_login(mm, email, password, mfa_code=mfa_code,
+                      mfa_secret_key=mfa_secret_key)
     mm.save_session(session_path)
 
-    result = {"session_path": session_path, "persisted_credentials": False}
+    result = {"session_path": session_path, "persisted_credentials": False,
+              "method": "token" if token else "login"}
     if persist:
+        if token:
+            raise MonarchSkillError(
+                "--persist-credentials requires --email/--password; it cannot "
+                "be combined with --token (tokens expire and are not reusable "
+                "credentials)."
+            )
         write_credentials(cred_path, email, password, mfa_secret_key)
         result["persisted_credentials"] = True
         result["cred_path"] = cred_path
@@ -109,17 +136,23 @@ def main(argv=None):
         pass
     p = argparse.ArgumentParser(
         description="One-time Monarch Money login (saves a session pickle).")
-    p.add_argument("--email", required=True)
-    p.add_argument("--password", required=True)
+    p.add_argument("--email")
+    p.add_argument("--password")
     p.add_argument("--mfa-code", help="One-time TOTP code for this login (Option A).")
     p.add_argument("--mfa-secret-key",
                    help="Base32 TOTP secret (enables zero-touch reauth with -B).")
+    p.add_argument("--token",
+                   help="Option C: existing Monarch session token (from the web "
+                        "app's DevTools). No email/password needed.")
     p.add_argument("--persist-credentials", action="store_true",
                    help="Option B: also store email+password+mfa_secret in "
                         "data/credentials.json. Requires user confirmation.")
     p.add_argument("--session-path", default=DEFAULT_SESSION_PATH)
     p.add_argument("--cred-path", default=DEFAULT_CRED_PATH)
     args = p.parse_args(argv)
+
+    if not args.token and not (args.email and args.password):
+        p.error("provide either --token, or both --email and --password")
 
     try:
         result = run_setup(
@@ -130,6 +163,7 @@ def main(argv=None):
             session_path=args.session_path,
             cred_path=args.cred_path,
             mfa_secret_key=args.mfa_secret_key,
+            token=args.token,
         )
     except MonarchSkillError as exc:
         print(f"Auth setup failed: {exc}", file=sys.stderr)
@@ -141,6 +175,9 @@ def main(argv=None):
 
     # Success message — deliberately mentions no secret material.
     print("✓ Monarch session saved to:", result["session_path"])
+    if result.get("method") == "token":
+        print("  Authenticated via existing session token (Option C).")
+        print("  When the token expires, copy a fresh one and re-run.")
     if result["persisted_credentials"]:
         print("✓ Credentials persisted (Option B) for zero-touch reauth.")
         print("  These can be revoked by deleting data/credentials.json and")

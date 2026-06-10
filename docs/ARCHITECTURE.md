@@ -33,7 +33,19 @@ fresh TOTP code.
 mfa_secret_key in data/credentials.json for zero-touch reauth. SKILL.md must
 require user confirmation before this path is used.
 
-Session expiry: catch LoginFailedException → stderr message → exit 1.
+**Option C (token, recommended for in-container setup):** `--token TOKEN`.
+Adopts an existing Monarch web-session token (copied from the browser DevTools
+Authorization header at app.monarchmoney.com). Validated with one lightweight
+API call (get_subscription_details) before the session pickle is saved. No
+email/password/MFA material is ever shared. Cannot be combined with
+--persist-credentials (tokens expire; they are not reusable credentials).
+
+This matters because users may have no local Python: the skill executes in
+Anthropic's container (which has Python), so all three options can run
+in-conversation. SKILL.md instructs Claude to state the trade-offs first
+(password transits chat history for A/B; TOTP codes expire in 30s).
+
+Session expiry: catch LoginFailedException → classified error → exit 1.
 Never retry a dead session. Never print session token/password/secret to stdout.
 
 ## SQLite Schema
@@ -104,6 +116,10 @@ NetworkError — ConnectionError / timeout to api.monarch.com
   stderr: "Cannot reach api.monarch.com. Check network egress from container."
 
 Exit code 1 on all three. Never retry against a dead session.
+
+Surfacing: fetch.py emits {"error": <class>, "message": <str>} as JSON on
+stdout (machine-parseable by Claude); setup_auth.py writes its failure message
+to stderr. The messages above are the canonical texts.
 
 ## Writability Fallback
 

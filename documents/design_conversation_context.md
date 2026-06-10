@@ -14,6 +14,17 @@ Option A default (session only, no stored password) — smallest credential
 footprint, revocable at Monarch's security settings.
 Option B (persist-credentials) — complete credentials stored, zero-touch
 reauth. Explicit opt-in only; SKILL.md must confirm with user first.
+Option C (token, added in review) — user copies the session token from the
+Monarch web app's DevTools and shares only that; no password/MFA secret ever
+transits the conversation. Recommended for users without local Python, since
+auth setup then happens inside the claude.ai container via chat.
+
+## No-local-Python flow
+
+The skill container has Python, so setup_auth.py runs in-conversation. Claude
+must state trade-offs before the user sends secrets: A/B put the password in
+chat history (suggest rotation after); TOTP codes expire in ~30s so the login
+must run immediately; C avoids both.
 
 ## Output Format
 

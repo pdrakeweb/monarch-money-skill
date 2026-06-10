@@ -27,14 +27,18 @@ if ($skillName -ne $skillDir) {
 if (Test-Path $outName) { Remove-Item $outName -Force }
 
 # --- copy to temp so we can guarantee data/ is empty -------------------------
+# The zip must contain a top-level monarch-money/ folder (claude.ai custom-skill
+# upload format), so stage the copy one level down.
 $tmp = Join-Path $env:TEMP "monarch_build_$(Get-Random)"
-Copy-Item $skillDir $tmp -Recurse
+New-Item $tmp -ItemType Directory | Out-Null
+$stage = Join-Path $tmp $skillDir
+Copy-Item $skillDir $stage -Recurse
 
 # Strip caches and any local secrets that must never ship.
-Get-ChildItem -Path $tmp -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+Get-ChildItem -Path $stage -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-$dataDir = Join-Path $tmp "data"
+$dataDir = Join-Path $stage "data"
 if (Test-Path $dataDir) {
     Remove-Item "$dataDir\*" -Recurse -Force -ErrorAction SilentlyContinue
 } else {
