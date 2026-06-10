@@ -146,6 +146,7 @@ integration or another tool.
 | `sync-all` | Run every sync in order | `--refresh` |
 | `status` | Cache row counts, ages, lifetime API calls | — |
 | `auth-status` | Session age + expiry estimate | — |
+| `clear-cache` | Empty the local cache; next sync re-pulls and re-infers tax buckets | `--include-user-buckets` |
 
 Global: `--refresh` bypasses TTL. (`--mock` exists for development against the
 repo's `tests/fixtures/` — those fixtures are not packaged in the deployed
@@ -200,7 +201,10 @@ the subtype is ambiguous, its name — on every sync (`roth`, `traditional`,
 → roth if the account name says Roth, else traditional; charitable /
 donor-advised accounts (Charitable, Daffy, …) → `excluded`, which keeps them
 out of asset-location math without nagging. Auto rows are refreshed each sync
-but never overwrite a user correction. To correct one, set
+but never overwrite a user correction. To force a full re-inference from
+scratch (e.g. after a classifier change): `python scripts/fetch.py clear-cache`
+then re-sync — user corrections survive the clear unless
+`--include-user-buckets` is passed. To correct one bucket by hand, set
 `auto_classified = 0`:
 
 ```sql

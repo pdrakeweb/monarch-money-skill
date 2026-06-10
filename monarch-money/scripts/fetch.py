@@ -664,7 +664,7 @@ class Ctx:
         self.days = getattr(args, "days", 30)
 
 
-NO_AUTH = {"net-worth", "status", "auth-status"}
+NO_AUTH = {"net-worth", "status", "auth-status", "clear-cache"}
 
 
 def dispatch(args, cache, client):
@@ -700,6 +700,18 @@ def dispatch(args, cache, client):
         render_status(cache)
     elif cmd == "auth-status":
         render_auth_status(args.session_path, args.cred_path, args.cookie_path)
+    elif cmd == "clear-cache":
+        counts = cache.clear(include_user_buckets=args.include_user_buckets)
+        print("## Cache Cleared\n")
+        for table in ("accounts", "holdings", "transactions", "budgets",
+                      "cashflow", "recurring"):
+            print(f"✓ {table}: {counts[table]} rows removed")
+        print(f"✓ tax buckets: {counts['tax_buckets']} auto rows removed "
+              f"({counts['user_buckets_kept']} user correction(s) kept)")
+        if args.include_user_buckets:
+            print("  (user corrections wiped — --include-user-buckets)")
+        print("\nNext sync re-pulls everything and re-infers tax buckets "
+              "with current classifier logic.")
     else:
         raise SystemExit(f"unknown command: {cmd}")
     return 0
@@ -772,6 +784,10 @@ def build_parser():
     sub.add_parser("sync-all", parents=[common])
     sub.add_parser("status", parents=[common])
     sub.add_parser("auth-status", parents=[common])
+    cc = sub.add_parser("clear-cache", parents=[common])
+    cc.add_argument("--include-user-buckets", action="store_true",
+                    help="Also wipe user-corrected tax buckets "
+                         "(auto_classified=0). Default keeps them.")
     return p
 
 

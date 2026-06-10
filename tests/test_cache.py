@@ -213,6 +213,56 @@ def test_tax_bucket_charitable_excluded(cache):
     assert _bucket(cache, "ch2")[0] == "excluded"
 
 
+def test_clear_preserves_user_buckets(cache):
+    cache.write_accounts([
+        _acct("a1", subtype="brokerage"),
+        _acct("a2", subtype="roth ira"),
+    ])
+    cache.write_transactions([_tx("t1"), _tx("t2")])
+    cache.write_holdings("a1", [_hold("VTI")])
+    # User corrects a1's bucket.
+    cache._conn.execute(
+        "UPDATE account_tax_buckets SET tax_bucket='traditional', "
+        "auto_classified=0 WHERE account_id='a1'")
+    cache._conn.commit()
+
+    cleared = cache.clear()
+
+    for table in ("accounts", "holdings", "transactions", "budgets",
+                  "cashflow", "recurring"):
+        assert cache._conn.execute(
+            f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0, table
+    # Auto bucket rows wiped (forces re-inference on next sync)...
+    assert _bucket(cache, "a2") is None
+    # ...but the user correction survives.
+    assert _bucket(cache, "a1") == ("traditional", 0)
+    assert cleared["user_buckets_kept"] == 1
+    # Re-sync re-infers with current logic.
+    cache.write_accounts([_acct("a2", subtype="roth ira")])
+    assert _bucket(cache, "a2") == ("roth", 1)
+
+
+def test_clear_include_user_buckets(cache):
+    cache.write_accounts([_acct("a1", subtype="brokerage")])
+    cache._conn.execute(
+        "UPDATE account_tax_buckets SET auto_classified=0 WHERE account_id='a1'")
+    cache._conn.commit()
+    cache.clear(include_user_buckets=True)
+    n = cache._conn.execute(
+        "SELECT COUNT(*) FROM account_tax_buckets").fetchone()[0]
+    assert n == 0
+
+
+def test_clear_resets_sync_markers_keeps_counters(cache):
+    cache.set_last_tx_sync("2026-06-01")
+    cache.set_last_full_sync("2026-06-01")
+    cache.increment_api_calls(5)
+    cache.clear()
+    assert cache.get_last_tx_sync() is None
+    assert cache._get_meta("last_full_sync") is None
+    assert int(cache.status()["api_call_count"]) == 5  # lifetime counter kept
+
+
 def test_tax_bucket_auto_rows_reclassified_on_logic_upgrade(cache):
     """Auto-classified rows update when the classifier improves; user rows
     (auto_classified=0) never do."""

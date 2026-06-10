@@ -199,5 +199,10 @@ net-worth                    (no API call, derives from cached accounts)
 sync-all [--refresh]         (runs all syncs in order)
 status                       (cache row counts, ages, API calls)
 auth-status                  (session age, expiry estimate)
+clear-cache [--include-user-buckets]
+                             (no API call; empties synced data + auto tax
+                              buckets so the next sync re-pulls and re-infers;
+                              user-corrected buckets survive unless the flag
+                              is passed; lifetime counters kept)
 
 Global flags: --refresh (bypass TTL), --mock (load fixture JSON)

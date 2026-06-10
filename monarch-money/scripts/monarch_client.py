@@ -471,6 +471,38 @@ class MonarchCache:
         self._conn.commit()
         return deleted
 
+    def clear(self, include_user_buckets=False):
+        """Empty all synced data so the next fetch re-pulls and re-infers
+        everything (incl. tax buckets under current classifier logic).
+
+        User-corrected tax buckets (auto_classified=0) are the one thing the
+        API can't regenerate, so they survive unless include_user_buckets is
+        set. Lifetime counters (api_call_count, schema_version) are kept;
+        sync markers are reset.
+        """
+        counts = {}
+        for table in ("accounts", "holdings", "transactions", "budgets",
+                      "cashflow", "recurring"):
+            counts[table] = self._conn.execute(f"DELETE FROM {table}").rowcount
+        if include_user_buckets:
+            counts["tax_buckets"] = self._conn.execute(
+                "DELETE FROM account_tax_buckets").rowcount
+            counts["user_buckets_kept"] = 0
+        else:
+            counts["tax_buckets"] = self._conn.execute(
+                "DELETE FROM account_tax_buckets WHERE auto_classified = 1"
+            ).rowcount
+            counts["user_buckets_kept"] = self._conn.execute(
+                "SELECT COUNT(*) FROM account_tax_buckets").fetchone()[0]
+        self._conn.execute(
+            "DELETE FROM meta WHERE key IN ('last_full_sync', 'last_tx_sync')")
+        self._conn.commit()
+        try:
+            self._conn.execute("VACUUM")
+        except sqlite3.Error:
+            pass
+        return counts
+
     def close(self):
         if self._conn is not None:
             try:

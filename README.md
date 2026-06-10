@@ -109,6 +109,7 @@ Run from the `monarch-money/` directory: `python scripts/fetch.py <command>`.
 | `sync-all` | Run every sync in order | `--refresh` |
 | `status` | Cache row counts, ages, API-call total | — |
 | `auth-status` | Session age + expiry estimate | — |
+| `clear-cache` | Empty the cache; next sync re-pulls + re-infers tax buckets | `--include-user-buckets` |
 
 Global flags: `--refresh` (bypass cache TTL), `--mock` (use bundled fixtures,
 no network — great for trying it offline), `--db PATH`, `--fixtures-dir DIR`.

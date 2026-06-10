@@ -179,6 +179,26 @@ def test_status_output(capsys, db):
     assert "accounts" in out
 
 
+def test_clear_cache_command(capsys, db):
+    _run(capsys, ["sync-all", *_base(db)])
+    code, out = _run(capsys, ["clear-cache", "--db", db])
+    assert code == 0
+    assert "cleared" in out.lower()
+    c = MonarchCache(db)
+    st = c.status()
+    c.close()
+    assert st["accounts_rows"] == 0
+    assert st["transactions_rows"] == 0
+    # Re-sync repopulates and re-infers tax buckets.
+    _run(capsys, ["accounts", *_base(db)])
+    c = MonarchCache(db)
+    n_buckets = c._conn.execute(
+        "SELECT COUNT(*) FROM account_tax_buckets WHERE auto_classified=1"
+    ).fetchone()[0]
+    c.close()
+    assert n_buckets == 8
+
+
 def test_sync_all(capsys, db):
     code, out = _run(capsys, ["sync-all", *_base(db)])
     assert code == 0
