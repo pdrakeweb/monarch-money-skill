@@ -1,35 +1,26 @@
 <#
 .SYNOPSIS
-    Build and deploy the monarch-money skill into Claude Desktop's local
-    skills-plugin directory.
+    Build and deploy this skill into Claude Desktop's local skills-plugin dir.
 
 .DESCRIPTION
-    Trigger phrase for Claude Code: "build and deploy this skill".
+    SHARED SKELETON FILE — generic; no per-skill edits needed.
 
-    1. Runs build.ps1 to produce monarch-money.zip (with an empty data/).
-    2. Extracts the zip and validates SKILL.md (frontmatter `name:` field).
-    3. Locates the Claude Desktop skills-plugin target — auto-detects the nested
-       <outer-guid>\<inner-guid>\skills\<skill-name>\ layout used by Claude
-       Desktop; falls back to
-       %APPDATA%\Claude\local-agent-mode-sessions\skills-plugin\<skill-name>\.
-    4. Backs up the existing deployed skill, keeping the last 5 backups.
-    5. Mirrors source -> target with robocopy /MIR (stale files removed).
+    1. Runs build.ps1 (auto-discovers the skill, validates name + version).
+    2. Extracts the zip and reads the skill name from SKILL.md frontmatter.
+    3. Locates the Claude Desktop skills-plugin target — auto-detects the
+       nested <outer-guid>\<inner-guid>\skills\<skill-name>\ layout; falls
+       back to %APPDATA%\Claude\local-agent-mode-sessions\skills-plugin\<name>\.
+    4. Backs up the existing deployment (keeps last 5).
+    5. Mirrors with robocopy /MIR, EXCLUDING data\ so the deployed cache,
+       sessions, and credentials survive every redeploy.
     6. Optionally restarts Claude Desktop.
 
 .PARAMETER DryRun
     Show what would happen without writing anything.
-
 .PARAMETER RestartClaude
     Kill Claude Desktop and relaunch it after a successful deploy.
-
 .PARAMETER SkipBackup
-    Skip the pre-deploy backup of the currently-deployed skill.
-
-.EXAMPLE
-    .\deploy.ps1 -DryRun
-
-.EXAMPLE
-    .\deploy.ps1 -RestartClaude
+    Skip the pre-deploy backup.
 #>
 [CmdletBinding()]
 param(
@@ -45,66 +36,54 @@ $script:StartTime = Get-Date
 $script:ProjectRoot = $PSScriptRoot
 $script:TempDirs = New-Object System.Collections.Generic.List[string]
 
-function Write-Step    { param([string]$m) Write-Host "==> $m" -ForegroundColor Cyan }
-function Write-Info    { param([string]$m) Write-Host "    $m" -ForegroundColor Gray }
-function Write-Ok      { param([string]$m) Write-Host "    $m" -ForegroundColor Green }
-function Write-Warn    { param([string]$m) Write-Host "    $m" -ForegroundColor Yellow }
+function Write-Step { param([string]$m) Write-Host "==> $m" -ForegroundColor Cyan }
+function Write-Info { param([string]$m) Write-Host "    $m" -ForegroundColor Gray }
+function Write-Ok   { param([string]$m) Write-Host "    $m" -ForegroundColor Green }
+function Write-Warn { param([string]$m) Write-Host "    $m" -ForegroundColor Yellow }
 
 function Cleanup-TempDirs {
     foreach ($d in $script:TempDirs) {
         if ($d -and (Test-Path -LiteralPath $d)) {
             try { Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction Stop }
-            catch { Write-Warn "Could not remove temp dir: $d ($($_.Exception.Message))" }
+            catch { Write-Warn "Could not remove temp dir: $d" }
         }
     }
 }
 
-# ---------------------------------------------------------------------------
-# 1. Run the build
-# ---------------------------------------------------------------------------
+function Get-SkillDirName {
+    $dirs = @(Get-ChildItem -LiteralPath $script:ProjectRoot -Directory |
+        Where-Object { Test-Path (Join-Path $_.FullName 'SKILL.md') })
+    if ($dirs.Count -ne 1) { throw "Expected exactly one SKILL.md-bearing directory; found $($dirs.Count)." }
+    return $dirs[0].Name
+}
+
 function Invoke-ProjectBuild {
     $buildPs1 = Join-Path $script:ProjectRoot 'build.ps1'
-    if (-not (Test-Path -LiteralPath $buildPs1)) {
-        throw "build.ps1 not found at $buildPs1"
-    }
+    if (-not (Test-Path -LiteralPath $buildPs1)) { throw "build.ps1 not found." }
     Write-Step "Running build.ps1"
-    if ($DryRun) {
-        Write-Info "[dry-run] would invoke: pwsh $buildPs1"
-    } else {
-        $global:LASTEXITCODE = 0
-        & $buildPs1
-        $rc = $global:LASTEXITCODE
-        if ($rc -and $rc -ne 0) { throw "build.ps1 failed with exit code $rc" }
-    }
+    if ($DryRun) { Write-Info "[dry-run] would invoke: pwsh $buildPs1"; return }
+    $global:LASTEXITCODE = 0
+    & $buildPs1
+    $rc = $global:LASTEXITCODE
+    if ($rc -and $rc -ne 0) { throw "build.ps1 failed with exit code $rc" }
 }
 
-# ---------------------------------------------------------------------------
-# 2. Resolve the build output: extract the zip; the skill source is the
-#    monarch-money/ folder inside it (build.ps1 wraps a top-level folder).
-# ---------------------------------------------------------------------------
 function Resolve-BuildOutput {
-    $zip = Join-Path $script:ProjectRoot 'monarch-money.zip'
+    param([string]$SkillDirName)
+    $zip = Join-Path $script:ProjectRoot "$SkillDirName.zip"
     if (-not (Test-Path -LiteralPath $zip)) {
-        if ($DryRun) {
-            # Fall back to the in-tree skill dir so dry-run is meaningful.
-            $inTree = Join-Path $script:ProjectRoot 'monarch-money'
-            Write-Info "[dry-run] zip absent; using $inTree as proxy source"
-            return $inTree
-        }
-        throw "monarch-money.zip not found after build."
+        if ($DryRun) { return (Join-Path $script:ProjectRoot $SkillDirName) }
+        throw "$SkillDirName.zip not found after build."
     }
-
-    $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("monarch-skill-deploy-" + [Guid]::NewGuid().ToString('N'))
+    $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("skill-deploy-" + [Guid]::NewGuid().ToString('N'))
     $script:TempDirs.Add($temp)
     if ($DryRun) {
         Write-Info "[dry-run] would extract $zip to $temp"
-        return (Join-Path $script:ProjectRoot 'monarch-money')
+        return (Join-Path $script:ProjectRoot $SkillDirName)
     }
     New-Item -ItemType Directory -Path $temp -Force | Out-Null
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $temp)
-
-    # SKILL.md at extraction root, or inside a single skill folder.
     if (Test-Path -LiteralPath (Join-Path $temp 'SKILL.md')) { return $temp }
     $skillDirs = @(Get-ChildItem -LiteralPath $temp -Directory |
         Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'SKILL.md') })
@@ -112,23 +91,13 @@ function Resolve-BuildOutput {
     throw "Could not locate SKILL.md inside the extracted zip."
 }
 
-# ---------------------------------------------------------------------------
-# 3. Validate SKILL.md and read the skill name from frontmatter
-# ---------------------------------------------------------------------------
 function Get-SkillName {
     param([string]$SourceDir)
-
     $skillMd = Join-Path $SourceDir 'SKILL.md'
-    if (-not (Test-Path -LiteralPath $skillMd)) {
-        throw "SKILL.md not found at source root: $skillMd"
-    }
-
+    if (-not (Test-Path -LiteralPath $skillMd)) { throw "SKILL.md not found at: $skillMd" }
     $content = Get-Content -LiteralPath $skillMd -Raw
-    if ($content -notmatch '(?s)\A---\r?\n(.*?)\r?\n---') {
-        throw "SKILL.md has no YAML frontmatter block: $skillMd"
-    }
+    if ($content -notmatch '(?s)\A---\r?\n(.*?)\r?\n---') { throw "SKILL.md has no YAML frontmatter." }
     $frontmatter = $Matches[1]
-
     $name = $null
     foreach ($line in $frontmatter -split "`n") {
         if ($line -match '^\s*name\s*:\s*(.+?)\s*$') {
@@ -137,29 +106,86 @@ function Get-SkillName {
                 ($raw.StartsWith("'") -and $raw.EndsWith("'"))) {
                 $raw = $raw.Substring(1, $raw.Length - 2)
             }
-            $name = $raw
-            break
+            $name = $raw; break
         }
     }
-    if ([string]::IsNullOrWhiteSpace($name)) {
-        throw "SKILL.md frontmatter does not contain a non-empty 'name:' field."
-    }
-    if ($name -notmatch '^[A-Za-z0-9._\-]+$') {
-        throw "Skill name '$name' contains characters unsafe for a directory name."
-    }
+    if ([string]::IsNullOrWhiteSpace($name)) { throw "SKILL.md frontmatter has no 'name:'." }
+    if ($name -notmatch '^[A-Za-z0-9._\-]+$') { throw "Skill name '$name' unsafe for a directory name." }
     return $name
 }
 
-# ---------------------------------------------------------------------------
-# 4. Locate the Claude Desktop skills-plugin target directory
-# ---------------------------------------------------------------------------
+function Get-SkillDescription {
+    param([string]$SourceDir)
+    $content = Get-Content -LiteralPath (Join-Path $SourceDir 'SKILL.md') -Raw
+    if ($content -notmatch '(?s)\A---\r?\n(.*?)\r?\n---') { return $null }
+    $fm = $Matches[1]
+    # Folded multi-line form: description: >  (indented continuation lines)
+    if ($fm -match '(?sm)^description:\s*>?\s*\r?\n((?:[ \t]+\S.*\r?\n?)+)') {
+        $lines = $Matches[1] -split "\r?\n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+        return ($lines -join ' ').Trim()
+    }
+    if ($fm -match '(?m)^description:\s*"?(.+?)"?\s*$') { return $Matches[1].Trim() }
+    return $null
+}
+
+function Sync-SkillManifest {
+    <#
+      Claude Desktop only loads skills listed in manifest.json (sibling of the
+      skills\ directory) — files alone are invisible. This registers the skill
+      when missing and keeps the manifest description in sync with SKILL.md.
+      A .bak of the manifest is written before any change.
+    #>
+    param([string]$TargetDir, [string]$SkillName, [string]$Description)
+    $skillsDir = Split-Path -Parent $TargetDir
+    $manifestPath = Join-Path (Split-Path -Parent $skillsDir) 'manifest.json'
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
+        Write-Warn "No manifest.json next to the skills dir — Claude Desktop will NOT see this skill."
+        Write-Warn "Install it once via Claude Desktop Settings > Capabilities > Skills (upload the zip)."
+        return 'no-manifest'
+    }
+    if ($DryRun) {
+        Write-Info "[dry-run] would sync manifest.json entry for '$SkillName'"
+        return 'dry-run'
+    }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $entry = @($manifest.skills) | Where-Object { $_.name -eq $SkillName } | Select-Object -First 1
+    $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.ffffffZ')
+    $changed = $false
+    $action = 'unchanged'
+    if ($entry) {
+        if ($Description -and $entry.description -ne $Description) {
+            Copy-Item -LiteralPath $manifestPath "$manifestPath.bak" -Force
+            $entry.description = $Description
+            $entry.updatedAt = $now
+            $changed = $true
+            $action = 'description-updated'
+        }
+    } else {
+        Copy-Item -LiteralPath $manifestPath "$manifestPath.bak" -Force
+        $new = [pscustomobject]@{
+            skillId     = "skill_local_$SkillName"
+            name        = $SkillName
+            description = $Description
+            creatorType = 'user'
+            updatedAt   = $now
+            enabled     = $true
+        }
+        $manifest.skills = @($manifest.skills) + @($new)
+        $changed = $true
+        $action = 'registered'
+        Write-Ok "Registered '$SkillName' in manifest.json (was missing — this is why a bare file copy is invisible)."
+    }
+    if ($changed) {
+        $manifest.lastUpdated = [int64]([datetimeoffset](Get-Date)).ToUnixTimeMilliseconds()
+        $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    }
+    return $action
+}
+
 function Resolve-DeployTarget {
     param([string]$SkillName)
-
     $appdata = $env:APPDATA
-    if ([string]::IsNullOrWhiteSpace($appdata)) {
-        throw "APPDATA environment variable is not set."
-    }
+    if ([string]::IsNullOrWhiteSpace($appdata)) { throw "APPDATA is not set." }
     $base = Join-Path $appdata 'Claude\local-agent-mode-sessions\skills-plugin'
 
     $existingHit = $null
@@ -168,21 +194,16 @@ function Resolve-DeployTarget {
         $outers = @(Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -ne '.backups' })
         foreach ($outer in $outers) {
-            $inners = @(Get-ChildItem -LiteralPath $outer.FullName -Directory -ErrorAction SilentlyContinue)
-            foreach ($inner in $inners) {
+            foreach ($inner in @(Get-ChildItem -LiteralPath $outer.FullName -Directory -ErrorAction SilentlyContinue)) {
                 $skillsDir = Join-Path $inner.FullName 'skills'
                 if (-not (Test-Path -LiteralPath $skillsDir -PathType Container)) { continue }
                 if (-not $anyManifestHit) { $anyManifestHit = $skillsDir }
                 $candidate = Join-Path $skillsDir $SkillName
-                if (Test-Path -LiteralPath $candidate -PathType Container) {
-                    $existingHit = $candidate
-                    break
-                }
+                if (Test-Path -LiteralPath $candidate -PathType Container) { $existingHit = $candidate; break }
             }
             if ($existingHit) { break }
         }
     }
-
     if ($existingHit) {
         Write-Info "Detected existing deployment: $existingHit"
         return [pscustomobject]@{ Path = $existingHit; Layout = 'nested-existing' }
@@ -192,191 +213,120 @@ function Resolve-DeployTarget {
         Write-Info "Detected nested skills-plugin layout; new skill dir: $target"
         return [pscustomobject]@{ Path = $target; Layout = 'nested-new' }
     }
-
     $fallback = Join-Path $base $SkillName
-    Write-Warn "No nested GUID layout found under skills-plugin. Falling back to literal path: $fallback"
-    Write-Warn "Claude Desktop may not pick this up automatically. Inspect the directory after deploy."
+    Write-Warn "No nested GUID layout found. Falling back to: $fallback"
     return [pscustomobject]@{ Path = $fallback; Layout = 'literal-fallback' }
 }
 
-# ---------------------------------------------------------------------------
-# 5. Backup existing deployment and prune to the last 5
-# ---------------------------------------------------------------------------
 function Backup-ExistingDeployment {
     param([string]$Target, [string]$SkillName)
-
-    if ($SkipBackup) {
-        Write-Info "Backup skipped (-SkipBackup)."
-        return $null
-    }
+    if ($SkipBackup) { Write-Info "Backup skipped (-SkipBackup)."; return $null }
     if (-not (Test-Path -LiteralPath $Target -PathType Container)) {
-        Write-Info "Nothing to back up (target does not exist yet)."
-        return $null
+        Write-Info "Nothing to back up (target does not exist yet)."; return $null
     }
-
     $backupRoot = Join-Path $env:APPDATA 'Claude\local-agent-mode-sessions\skills-plugin\.backups'
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $backupDir = Join-Path $backupRoot ("{0}_{1}" -f $SkillName, $stamp)
-
     if ($DryRun) {
         Write-Info "[dry-run] would back up $Target -> $backupDir"
     } else {
         New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
-        $rcArgs = @($Target, $backupDir, '/E', '/COPY:DAT', '/R:1', '/W:1', '/NFL', '/NDL', '/NP', '/NJH', '/NJS')
-        & robocopy @rcArgs | Out-Null
+        & robocopy @($Target, $backupDir, '/E', '/COPY:DAT', '/R:1', '/W:1', '/NFL', '/NDL', '/NP', '/NJH', '/NJS') | Out-Null
         $rc = $LASTEXITCODE
         $global:LASTEXITCODE = 0
         if ($rc -ge 8) { throw "Backup robocopy failed with exit code $rc" }
         Write-Ok "Backup created: $backupDir"
     }
-
-    # Prune older backups, keep last 5 for THIS skill.
     if (-not $DryRun -and (Test-Path -LiteralPath $backupRoot -PathType Container)) {
-        $pattern = "$SkillName" + "_*"
-        $old = @(Get-ChildItem -LiteralPath $backupRoot -Directory -Filter $pattern -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -Skip 5)
+        $old = @(Get-ChildItem -LiteralPath $backupRoot -Directory -Filter ("$SkillName" + "_*") -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -Skip 5)
         foreach ($o in $old) {
-            try {
-                Remove-Item -LiteralPath $o.FullName -Recurse -Force -ErrorAction Stop
-                Write-Info "Pruned old backup: $($o.Name)"
-            } catch {
-                Write-Warn "Could not prune backup $($o.FullName): $($_.Exception.Message)"
-            }
+            try { Remove-Item -LiteralPath $o.FullName -Recurse -Force -ErrorAction Stop; Write-Info "Pruned old backup: $($o.Name)" }
+            catch { Write-Warn "Could not prune backup $($o.FullName)" }
         }
     }
-
     return $backupDir
 }
 
-# ---------------------------------------------------------------------------
-# 6. Mirror source -> target with robocopy /MIR
-# ---------------------------------------------------------------------------
 function Invoke-Mirror {
     param([string]$Source, [string]$Target)
-
-    if (-not $DryRun) {
-        if (-not (Test-Path -LiteralPath $Target -PathType Container)) {
-            New-Item -ItemType Directory -Path $Target -Force | Out-Null
-        }
+    if (-not $DryRun -and -not (Test-Path -LiteralPath $Target -PathType Container)) {
+        New-Item -ItemType Directory -Path $Target -Force | Out-Null
     }
-
-    # /XD data: never clobber the deployed skill's runtime data (session
-    # pickle, SQLite cache, credentials) with the build's empty data/ dir.
-    $rcArgs = @(
-        $Source, $Target,
-        '/MIR',
-        '/XD', 'data',
-        '/COPY:DAT',
-        '/R:2', '/W:2',
-        '/NFL', '/NDL', '/NP'
-    )
+    # /XD data: never clobber the deployed skill's runtime data (cache,
+    # session pickles, credentials) with the build's empty data/ dir.
+    $rcArgs = @($Source, $Target, '/MIR', '/XD', 'data', '/COPY:DAT', '/R:2', '/W:2', '/NFL', '/NDL', '/NP')
     if ($DryRun) { $rcArgs += '/L' }
-
     Write-Step ("robocopy " + ($rcArgs -join ' '))
     $output = & robocopy @rcArgs
     $rc = $LASTEXITCODE
     $global:LASTEXITCODE = 0
     if ($rc -ge 8) {
         Write-Host ($output -join "`n") -ForegroundColor Red
-        throw "robocopy failed with exit code $rc (>=8 = failure)"
+        throw "robocopy failed with exit code $rc"
     }
-
-    # Ensure data/ exists at the target even on first deploy (it is excluded
-    # from the mirror above).
     $targetData = Join-Path $Target 'data'
     if (-not $DryRun -and -not (Test-Path -LiteralPath $targetData)) {
         New-Item -ItemType Directory -Path $targetData -Force | Out-Null
     }
-
     $copied = 0; $removed = 0
     foreach ($line in $output) {
         if ($line -match '^\s*Files\s*:\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$') {
-            $copied  = [int]$Matches[2]
-            $removed = [int]$Matches[6]
+            $copied = [int]$Matches[2]; $removed = [int]$Matches[6]
         }
     }
-
     return [pscustomobject]@{ ExitCode = $rc; Copied = $copied; Removed = $removed }
 }
 
-# ---------------------------------------------------------------------------
-# 7. Optional: restart Claude Desktop
-# ---------------------------------------------------------------------------
 function Restart-ClaudeDesktop {
     Write-Step "Restarting Claude Desktop"
     $procs = @(Get-Process -Name 'Claude' -ErrorAction SilentlyContinue)
-    if ($DryRun) {
-        if ($procs.Count -gt 0) { Write-Info "[dry-run] would kill PID(s): $($procs.Id -join ', ')" }
-        else                    { Write-Info "[dry-run] no Claude process running" }
-        Write-Info "[dry-run] would relaunch Claude Desktop"
-        return
-    }
+    if ($DryRun) { Write-Info "[dry-run] would restart Claude Desktop"; return }
     if ($procs.Count -gt 0) {
         $procs | Stop-Process -Force -ErrorAction SilentlyContinue
         Start-Sleep -Milliseconds 750
         Write-Ok "Stopped Claude Desktop ($($procs.Count) process(es))"
-    } else {
-        Write-Info "Claude Desktop was not running."
     }
-
     $exe = Join-Path $env:LOCALAPPDATA 'AnthropicClaude\Claude.exe'
-    if (-not (Test-Path -LiteralPath $exe)) {
-        $exe = Join-Path $env:LOCALAPPDATA 'Programs\Claude\Claude.exe'
-    }
-    if (Test-Path -LiteralPath $exe) {
-        Start-Process -FilePath $exe | Out-Null
-        Write-Ok "Launched: $exe"
-    } else {
-        Write-Warn "Could not find Claude.exe under %LOCALAPPDATA%. Launch manually."
-    }
+    if (-not (Test-Path -LiteralPath $exe)) { $exe = Join-Path $env:LOCALAPPDATA 'Programs\Claude\Claude.exe' }
+    if (Test-Path -LiteralPath $exe) { Start-Process -FilePath $exe | Out-Null; Write-Ok "Launched: $exe" }
+    else { Write-Warn "Could not find Claude.exe under %LOCALAPPDATA%." }
 }
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 try {
     Write-Host ""
-    Write-Host "=== Monarch Money Skill Deploy ===" -ForegroundColor Magenta
+    Write-Host "=== Skill Deploy ===" -ForegroundColor Magenta
     if ($DryRun) { Write-Host "    (DRY RUN — no changes will be written)" -ForegroundColor Yellow }
     Write-Host ""
 
+    $skillDirName = Get-SkillDirName
     Invoke-ProjectBuild
-    $sourceDir = Resolve-BuildOutput
+    $sourceDir = Resolve-BuildOutput -SkillDirName $skillDirName
     $skillName = Get-SkillName -SourceDir $sourceDir
     Write-Info "Skill name: $skillName"
 
     $targetInfo = Resolve-DeployTarget -SkillName $skillName
-    $targetDir  = $targetInfo.Path
-
+    $targetDir = $targetInfo.Path
     $backupPath = Backup-ExistingDeployment -Target $targetDir -SkillName $skillName
-
     $mirror = Invoke-Mirror -Source $sourceDir -Target $targetDir
-
-    if ($RestartClaude) {
-        Restart-ClaudeDesktop
-    }
+    $description = Get-SkillDescription -SourceDir $sourceDir
+    $manifestAction = Sync-SkillManifest -TargetDir $targetDir -SkillName $skillName -Description $description
+    if ($RestartClaude) { Restart-ClaudeDesktop }
 
     $elapsed = (Get-Date) - $script:StartTime
-
     Write-Host ""
     Write-Host "=== Deploy Summary ===" -ForegroundColor Magenta
     Write-Host ("  Skill name     : {0}" -f $skillName)
-    Write-Host ("  Source         : {0}" -f $sourceDir)
     Write-Host ("  Target         : {0}" -f $targetDir)
     Write-Host ("  Target layout  : {0}" -f $targetInfo.Layout)
-    Write-Host ("  Files copied   : {0}  (robocopy 'Copied' — adds+modifies combined)" -f $mirror.Copied)
-    Write-Host ("  Files removed  : {0}  (stale extras removed from target by /MIR)" -f $mirror.Removed)
+    Write-Host ("  Files copied   : {0}" -f $mirror.Copied)
+    Write-Host ("  Files removed  : {0}" -f $mirror.Removed)
+    Write-Host ("  Manifest       : {0}" -f $manifestAction)
     Write-Host ("  Backup         : {0}" -f $(if ($backupPath) { $backupPath } else { '(none)' }))
-    Write-Host ("  Restart Claude : {0}" -f $(if ($RestartClaude) { 'yes' } else { 'no' }))
-    Write-Host ("  Dry run        : {0}" -f $(if ($DryRun) { 'yes' } else { 'no' }))
     Write-Host ("  Elapsed        : {0:N1}s" -f $elapsed.TotalSeconds)
     Write-Host ""
-    if ($DryRun) {
-        Write-Host "Dry run complete. Re-run without -DryRun to apply." -ForegroundColor Yellow
-    } else {
-        Write-Host "Deploy complete. Restart Claude Desktop to pick up changes." -ForegroundColor Green
-    }
+    if ($DryRun) { Write-Host "Dry run complete." -ForegroundColor Yellow }
+    else { Write-Host "Deploy complete. Restart Claude Desktop to pick up changes." -ForegroundColor Green }
 }
 catch {
     Write-Host ""
