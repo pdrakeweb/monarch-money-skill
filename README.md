@@ -31,9 +31,10 @@ summaries**; Claude queries the SQLite cache directly for real analysis.
 **You don't need Python installed locally.** The skill runs in Anthropic's
 container, which has Python — just ask Claude to set up Monarch auth in a
 conversation where the skill is enabled, and it runs `setup_auth.py` for you.
-Three options, by credential footprint:
+Three options — **all are supported; pick whichever you're comfortable with**
+(Claude will state the trade-off and proceed with your choice):
 
-### Option C — session token (recommended; no password shared)
+### Option C — session token (no password shared)
 
 Copy your existing Monarch web-session token and give Claude **only the token**:
 

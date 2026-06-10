@@ -42,39 +42,22 @@ is cheap and won't re-hit the API unless stale or `--refresh` is passed.
 ## 2. First-run setup
 
 The user does NOT need Python locally — `setup_auth.py` runs right here in the
-skill container. Pick the option that matches what the user is comfortable
-sharing, and state the trade-off before they send anything sensitive.
+skill container. **Never instruct the user to run code or scripts on their own
+machine**; everything below executes in this environment.
 
-### Option C — session token (recommended; no password ever shared)
+**All three options are legitimate and supported.** Briefly state the
+trade-off of the user's chosen option ONCE, then proceed with it. Do NOT
+refuse email/password/MFA (Option A) or insist on the token option — the user
+decides what they're comfortable sharing. If the user has already provided
+credentials, use them; lecturing or stalling is worse than proceeding.
 
-The user copies their existing Monarch web-session token and pastes **only the
-token** into the chat. Their password and MFA secret never leave their machine.
-
-Walk them through getting the token:
-1. Log in at **app.monarchmoney.com** in a desktop browser.
-2. Open DevTools (F12) → **Network** tab → click any request to
-   `api.monarchmoney.com/graphql`.
-3. In Request Headers, copy the value after `Authorization: Token ` —
-   a long hex string. (Alternatively: Application → Local Storage →
-   `persist:root` → inside the `user` entry, the `token` field.)
-4. Paste it in the chat.
-
-Then run:
-```
-python scripts/setup_auth.py --token THEIR_TOKEN
-```
-The script validates the token with one lightweight API call before saving
-`data/session.pickle`. When the token eventually expires (`AuthExpiredError`),
-ask for a fresh one.
-
-### Option A — email + password + TOTP code
+### Option A — email + password + TOTP code (simplest, start here)
 
 The user pastes email, password, and a **current** 6-digit MFA code into chat.
-Caveats to state up front: (a) the password transits this conversation and will
-sit in the chat history — suggest rotating it afterward if they're
-uncomfortable; (b) TOTP codes expire every 30 seconds, so run the command
-**immediately** after they send the code, and ask them to send a freshly
-generated one.
+One-sentence caveat to state, then move on: the password will sit in this
+conversation's history, so they may want to rotate it afterward. TOTP codes
+expire every ~30 seconds — run the command **immediately** after they send the
+code; if the login fails on timing, just ask for a fresh code and re-run.
 
 ```
 python scripts/setup_auth.py --email you@example.com \
@@ -97,6 +80,44 @@ python scripts/setup_auth.py --email you@example.com \
 ```
 
 Revocation: delete `data/credentials.json` and rotate the Monarch password.
+
+### Option C — session token (no password shared; only if the user prefers it)
+
+The user copies their existing Monarch web-session token and pastes **only the
+token**. Offer this as an alternative, not a requirement — if token extraction
+frustrates the user, fall back to Option A without complaint.
+
+Most reliable extraction (Network tab — works regardless of how Monarch stores
+state):
+1. Log in at **app.monarchmoney.com** in a desktop browser.
+2. Open DevTools (F12 or Ctrl+Shift+I) **first**, go to the **Network** tab,
+   then **reload the page** (the tab only records traffic while open).
+3. In the Network filter box type `graphql`, and click any request in the list.
+4. In the **Headers** pane, scroll to **Request Headers** and find
+   `authorization: Token <long-hex-string>`. Copy everything after `Token `.
+   (If headers show nothing, click a different graphql request — preflight
+   OPTIONS requests have no auth header; pick a POST.)
+
+Alternative (Console tab, one paste):
+1. Same site, DevTools → **Console** tab. If Chrome blocks pasting, type
+   `allow pasting` first, then paste:
+```js
+(()=>{try{const r=JSON.parse(localStorage.getItem("persist:root"));
+const u=JSON.parse(r.user);return u.token||"no token field"}
+catch(e){return "not found - use the Network tab method"}})()
+```
+2. The console prints the token string — copy it (without quotes).
+
+If neither works (Monarch occasionally changes where state lives), don't send
+the user on a scavenger hunt — fall back to Option A.
+
+Then run:
+```
+python scripts/setup_auth.py --token THEIR_TOKEN
+```
+The script validates the token with one lightweight API call before saving
+`data/session.pickle`. When the token eventually expires (`AuthExpiredError`),
+ask for a fresh one — or suggest Option A.
 
 ## 3. Command reference
 

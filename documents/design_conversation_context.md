@@ -26,6 +26,14 @@ must state trade-offs before the user sends secrets: A/B put the password in
 chat history (suggest rotation after); TOTP codes expire in ~30s so the login
 must run immediately; C avoids both.
 
+Field lesson (2026-06): an early SKILL.md draft labeled Option C "recommended"
+with heavy caveats on A — the in-session Claude over-applied that and REFUSED
+the user's own email/password, then improvised local-Python token extraction
+(worse: secrets land in shell history, and the user may have no Python).
+SKILL.md now states explicitly: all options are legitimate, state the trade-off
+once and proceed with the user's choice, never refuse Option A, and never
+instruct the user to run code on their own machine.
+
 ## Output Format
 
 Compact Markdown summaries to stdout. Claude queries SQLite for analysis.
