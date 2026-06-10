@@ -26,6 +26,15 @@ must state trade-offs before the user sends secrets: A/B put the password in
 chat history (suggest rotation after); TOTP codes expire in ~30s so the login
 must run immediately; C avoids both.
 
+Field lessons (2026-06, second round):
+- The Monarch web app no longer exposes a bearer token to the browser — auth
+  is cookie-only (csrftoken + sessionid). Token extraction instructions were
+  removed; Option D (cookies) is the browser-based no-password route, and
+  Option C is reserved for tokens obtained elsewhere.
+- Rotating the Monarch password does NOT invalidate a saved session. Docs now
+  recommend "authenticate once, then rotate" as the standard mitigation for
+  pasting a password into chat (Option A).
+
 Field lesson (2026-06): an early SKILL.md draft labeled Option C "recommended"
 with heavy caveats on A — the in-session Claude over-applied that and REFUSED
 the user's own email/password, then improvised local-Python token extraction

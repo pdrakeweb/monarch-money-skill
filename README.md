@@ -49,18 +49,16 @@ The values are validated with one API call and saved to
 `data/cookie_session.json` (git-ignored). They expire with the browser session
 (typically weeks) — just re-copy when that happens.
 
-### Option C — session token (no password shared)
+### Option C — bearer token (only if you already have one)
 
-Copy your existing Monarch web-session token and give Claude **only the token**:
+`python monarch-money/scripts/setup_auth.py --token YOUR_TOKEN` adopts an
+existing API bearer token.
 
-1. Log in at app.monarchmoney.com in a desktop browser.
-2. DevTools (F12) → **Network** → click any `graphql` request →
-   Request Headers → copy the value after `Authorization: Token `.
-3. Paste the token into the chat (or run locally:
-   `python monarch-money/scripts/setup_auth.py --token YOUR_TOKEN`).
-
-Your password and MFA secret never leave your machine. When the token expires,
-repeat with a fresh one.
+**Note (mid-2026):** the Monarch web app no longer uses bearer tokens — it
+authenticates with session cookies only, so you can't extract a token from the
+browser anymore (no `Authorization: Token …` header, nothing in localStorage).
+Use Option D for browser-based setup; Option C is only for a token you saved
+from a previous integration or another API tool.
 
 ### Option A — email + password + TOTP code
 
@@ -70,9 +68,11 @@ python monarch-money/scripts/setup_auth.py \
 ```
 
 Saves `monarch-money/data/session.pickle`; your password is **never** written to
-disk. If you do this through chat instead of locally, note your password will
-appear in the conversation history (consider rotating it after), and TOTP codes
-expire in 30 seconds — send a freshly generated code.
+disk. If you do this through chat instead of locally, your password will appear
+in the conversation history — the clean fix is to **rotate your password right
+after setup: the saved session keeps working after a password change**, so
+nothing left in the history remains usable. TOTP codes expire in 30 seconds —
+send a freshly generated code.
 
 ### Option B — persisted credentials (zero-touch reauth, opt-in)
 

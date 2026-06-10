@@ -33,12 +33,19 @@ fresh TOTP code.
 mfa_secret_key in data/credentials.json for zero-touch reauth. SKILL.md must
 require user confirmation before this path is used.
 
-**Option C (token, recommended for in-container setup):** `--token TOKEN`.
-Adopts an existing Monarch web-session token (copied from the browser DevTools
-Authorization header at app.monarchmoney.com). Validated with one lightweight
-API call (get_subscription_details) before the session pickle is saved. No
-email/password/MFA material is ever shared. Cannot be combined with
---persist-credentials (tokens expire; they are not reusable credentials).
+**Option C (token):** `--token TOKEN`. Adopts an existing API bearer token.
+Validated with one lightweight API call (get_subscription_details) before the
+session pickle is saved. Cannot be combined with --persist-credentials (tokens
+expire; they are not reusable credentials). NOTE (field finding, mid-2026): the
+Monarch web app no longer uses bearer tokens — browser sessions are cookie-only,
+so tokens cannot be extracted from DevTools anymore. Option C only applies to a
+token obtained elsewhere; browser-based no-password setup is Option D.
+
+**Session vs password lifecycle (field finding):** rotating the Monarch
+password does NOT invalidate an existing saved session/token. Documented
+pattern for chat-based Option A setup: authenticate once, then rotate the
+password — the session keeps working and nothing left in chat history is
+usable.
 
 **Option D (browser cookies):** `--csrf-token X --session-id Y`. Monarch's
 backend is Django; a logged-in browser holds `csrftoken` and `sessionid`

@@ -55,9 +55,12 @@ credentials, use them; lecturing or stalling is worse than proceeding.
 
 The user pastes email, password, and a **current** 6-digit MFA code into chat.
 One-sentence caveat to state, then move on: the password will sit in this
-conversation's history, so they may want to rotate it afterward. TOTP codes
-expire every ~30 seconds — run the command **immediately** after they send the
-code; if the login fails on timing, just ask for a fresh code and re-run.
+conversation's history — and the clean mitigation is to **rotate the password
+right after setup: the saved session keeps working after a password change**
+(verified in practice), so "authenticate once, then rotate" leaves nothing
+sensitive usable in the history. TOTP codes expire every ~30 seconds — run the
+command **immediately** after they send the code; if the login fails on
+timing, just ask for a fresh code and re-run.
 
 ```
 python scripts/setup_auth.py --email you@example.com \
@@ -104,43 +107,18 @@ python scripts/setup_auth.py --email you@example.com \
 
 Revocation: delete `data/credentials.json` and rotate the Monarch password.
 
-### Option C — session token (no password shared; only if the user prefers it)
+### Option C — bearer token (only if the user already has one)
 
-The user copies their existing Monarch web-session token and pastes **only the
-token**. Offer this as an alternative, not a requirement — if token extraction
-frustrates the user, fall back to Option A without complaint.
+`setup_auth.py --token THEIR_TOKEN` adopts an existing API bearer token,
+validates it with one lightweight call, and saves `data/session.pickle`.
 
-Most reliable extraction (Network tab — works regardless of how Monarch stores
-state):
-1. Log in at **app.monarchmoney.com** in a desktop browser.
-2. Open DevTools (F12 or Ctrl+Shift+I) **first**, go to the **Network** tab,
-   then **reload the page** (the tab only records traffic while open).
-3. In the Network filter box type `graphql`, and click any request in the list.
-4. In the **Headers** pane, scroll to **Request Headers** and find
-   `authorization: Token <long-hex-string>`. Copy everything after `Token `.
-   (If headers show nothing, click a different graphql request — preflight
-   OPTIONS requests have no auth header; pick a POST.)
-
-Alternative (Console tab, one paste):
-1. Same site, DevTools → **Console** tab. If Chrome blocks pasting, type
-   `allow pasting` first, then paste:
-```js
-(()=>{try{const r=JSON.parse(localStorage.getItem("persist:root"));
-const u=JSON.parse(r.user);return u.token||"no token field"}
-catch(e){return "not found - use the Network tab method"}})()
-```
-2. The console prints the token string — copy it (without quotes).
-
-If neither works (Monarch occasionally changes where state lives), don't send
-the user on a scavenger hunt — fall back to Option A.
-
-Then run:
-```
-python scripts/setup_auth.py --token THEIR_TOKEN
-```
-The script validates the token with one lightweight API call before saving
-`data/session.pickle`. When the token eventually expires (`AuthExpiredError`),
-ask for a fresh one — or suggest Option A.
+⚠ **Do NOT send the user into the browser to find a token.** As of mid-2026
+the Monarch web app no longer uses bearer tokens — it authenticates with
+session cookies only, so there is no `Authorization: Token …` header in the
+Network tab and no token in localStorage. Browser extraction is Option D
+(cookies), not this. Option C exists only for a token obtained elsewhere
+(e.g. saved from a previous integration or another API tool). If the user
+doesn't already have one, use Option D or Option A.
 
 ## 3. Command reference
 
