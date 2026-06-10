@@ -1,0 +1,2 @@
+# Add your skill's runtime deps here (pin versions). pytest is for dev.
+pytest>=8

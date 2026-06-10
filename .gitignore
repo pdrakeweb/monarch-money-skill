@@ -1,0 +1,15 @@
+# runtime data — never commit caches, sessions, or credentials
+*/data/
+*.pickle
+*.db
+credentials.json
+cookie_session.json
+.env
+
+# build artifacts
+*.zip
+
+# python
+__pycache__/
+*.pyc
+.venv/
