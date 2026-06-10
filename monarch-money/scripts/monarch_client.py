@@ -519,8 +519,13 @@ class MonarchClient:
         mm = MonarchMoney(session_file=session_path)
         try:
             mm.load_session(session_path)
-        except Exception as exc:  # noqa: BLE001 - classify then re-raise
-            raise classify_error(exc)
+        except Exception as exc:  # noqa: BLE001
+            # A session that won't load (corrupt / expired / wrong format) is an
+            # auth problem, not schema drift — re-authentication is the fix.
+            raise AuthExpiredError(
+                "Saved Monarch session is unreadable or expired. Re-run: "
+                "python scripts/setup_auth.py --email ... --mfa-code CODE"
+            ) from exc
         return cls(mm, MonarchCache(cache_path))
 
     @classmethod
