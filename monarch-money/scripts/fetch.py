@@ -30,7 +30,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from monarch_client import (  # noqa: E402
     MonarchCache, MonarchClient, MonarchSkillError, classify_error,
-    DEFAULT_DB_PATH, DEFAULT_SESSION_PATH, DEFAULT_CRED_PATH, DEFAULT_DATA_DIR,
+    DEFAULT_DB_PATH, DEFAULT_SESSION_PATH, DEFAULT_CRED_PATH,
+    DEFAULT_COOKIE_PATH, DEFAULT_DATA_DIR,
 )
 
 TTL_4H = 4 * 3600
@@ -590,7 +591,7 @@ def render_status(cache):
     print(f"Total API calls (lifetime): {st['api_call_count']}")
 
 
-def render_auth_status(session_path, cred_path):
+def render_auth_status(session_path, cred_path, cookie_path):
     print("## Auth Status\n")
     print(f"Session file: {session_path}")
     if os.path.exists(session_path):
@@ -600,11 +601,20 @@ def render_auth_status(session_path, cred_path):
         print(f"Last modified: {dt:%Y-%m-%d %H:%M} ({days} days ago)")
         print("Estimated expiry: sessions typically last weeks to months")
     else:
-        print("Last modified: (no session — run setup_auth.py)")
+        print("Last modified: (no token session)")
+    if os.path.exists(cookie_path):
+        mtime = os.path.getmtime(cookie_path)
+        days = int((time.time() - mtime) / 86400)
+        print(f"Cookie session: present, saved {days} days ago (Option D)")
+    else:
+        print("Cookie session: not present")
     if os.path.exists(cred_path):
         print("Credentials file: present (Option B — zero-touch reauth enabled)")
     else:
-        print("Credentials file: not present (Option A)")
+        print("Credentials file: not present")
+    if not os.path.exists(session_path) and not os.path.exists(cookie_path) \
+            and not os.path.exists(cred_path):
+        print("\nNo auth configured — run scripts/setup_auth.py first.")
 
 
 # --------------------------------------------------------------------------- #
@@ -656,7 +666,7 @@ def dispatch(args, cache, client):
     elif cmd == "status":
         render_status(cache)
     elif cmd == "auth-status":
-        render_auth_status(args.session_path, args.cred_path)
+        render_auth_status(args.session_path, args.cred_path, args.cookie_path)
     else:
         raise SystemExit(f"unknown command: {cmd}")
     return 0
@@ -707,6 +717,7 @@ def build_parser():
     common.add_argument("--fixtures-dir", default=DEFAULT_FIXTURES_DIR)
     common.add_argument("--session-path", default=DEFAULT_SESSION_PATH)
     common.add_argument("--cred-path", default=DEFAULT_CRED_PATH)
+    common.add_argument("--cookie-path", default=DEFAULT_COOKIE_PATH)
 
     p = argparse.ArgumentParser(
         description="Monarch Money data fetch + cache CLI.", parents=[common])
@@ -746,7 +757,7 @@ def main(argv=None):
             cache = MonarchCache(args.db)
         else:
             client = MonarchClient.ensure_authenticated(
-                args.session_path, args.cred_path, args.db)
+                args.session_path, args.cred_path, args.db, args.cookie_path)
             cache = client.cache
         return dispatch(args, cache, client)
     except MonarchSkillError as exc:

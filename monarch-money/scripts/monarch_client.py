@@ -498,7 +498,25 @@ DEFAULT_DATA_DIR = os.path.join(
 )
 DEFAULT_SESSION_PATH = os.path.join(DEFAULT_DATA_DIR, "session.pickle")
 DEFAULT_CRED_PATH = os.path.join(DEFAULT_DATA_DIR, "credentials.json")
+DEFAULT_COOKIE_PATH = os.path.join(DEFAULT_DATA_DIR, "cookie_session.json")
 DEFAULT_DB_PATH = os.path.join(DEFAULT_DATA_DIR, "monarch_cache.db")
+
+MONARCH_ORIGIN = "https://app.monarchmoney.com"
+
+
+def apply_cookie_auth(mm, csrftoken, sessionid):
+    """Configure a MonarchMoney instance for Django session-cookie auth.
+
+    The library only knows bearer tokens, but its `_headers` dict feeds every
+    GraphQL request verbatim, so injecting the browser's session cookies plus
+    the CSRF/Origin headers Django's middleware checks gives an authenticated
+    transport without any token.
+    """
+    mm._headers["Cookie"] = f"csrftoken={csrftoken}; sessionid={sessionid}"
+    mm._headers["X-CSRFToken"] = csrftoken
+    mm._headers["Origin"] = MONARCH_ORIGIN
+    mm._headers["Referer"] = MONARCH_ORIGIN + "/"
+    return mm
 
 
 class MonarchClient:
@@ -554,17 +572,50 @@ class MonarchClient:
         return cls(mm, MonarchCache(cache_path))
 
     @classmethod
+    def from_cookie_session(cls, cookie_path=DEFAULT_COOKIE_PATH,
+                            cache_path=DEFAULT_DB_PATH):
+        """Authenticate via saved browser cookies (csrftoken + sessionid).
+
+        Cookie sessions can't use the library's pickle (it only stores bearer
+        tokens), so they persist as data/cookie_session.json instead.
+        """
+        from monarchmoney import MonarchMoney
+        if not os.path.exists(cookie_path):
+            raise AuthExpiredError("No saved cookie session.")
+        try:
+            with open(cookie_path, "r", encoding="utf-8") as fh:
+                cookies = json.load(fh)
+            csrftoken = cookies["csrftoken"]
+            sessionid = cookies["sessionid"]
+        except (json.JSONDecodeError, KeyError) as exc:
+            raise AuthExpiredError(
+                "Saved cookie session is unreadable. Re-run: python "
+                "scripts/setup_auth.py --csrf-token ... --session-id ..."
+            ) from exc
+        mm = MonarchMoney()
+        apply_cookie_auth(mm, csrftoken, sessionid)
+        return cls(mm, MonarchCache(cache_path))
+
+    @classmethod
     def ensure_authenticated(cls, session_path=DEFAULT_SESSION_PATH,
                              cred_path=DEFAULT_CRED_PATH,
-                             cache_path=DEFAULT_DB_PATH):
-        """Try a saved session first; fall back to persisted credentials;
-        else raise AuthExpiredError. Never retries a dead session."""
+                             cache_path=DEFAULT_DB_PATH,
+                             cookie_path=DEFAULT_COOKIE_PATH):
+        """Try a saved token session, then a saved cookie session, then
+        persisted credentials; else raise AuthExpiredError. Never retries a
+        dead session."""
         try:
             return cls.from_session(session_path, cache_path)
         except MonarchSkillError:
-            if os.path.exists(cred_path):
-                return cls.from_credentials(cred_path, cache_path, session_path)
-            raise AuthExpiredError(
-                "Monarch session expired. Re-run: python scripts/setup_auth.py "
-                "--email ... --mfa-code CODE"
-            )
+            pass
+        try:
+            return cls.from_cookie_session(cookie_path, cache_path)
+        except MonarchSkillError:
+            pass
+        if os.path.exists(cred_path):
+            return cls.from_credentials(cred_path, cache_path, session_path)
+        raise AuthExpiredError(
+            "Monarch session expired. Re-run: python scripts/setup_auth.py "
+            "--email ... --mfa-code CODE (or --token / --csrf-token + "
+            "--session-id)"
+        )

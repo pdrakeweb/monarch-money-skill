@@ -31,8 +31,23 @@ summaries**; Claude queries the SQLite cache directly for real analysis.
 **You don't need Python installed locally.** The skill runs in Anthropic's
 container, which has Python — just ask Claude to set up Monarch auth in a
 conversation where the skill is enabled, and it runs `setup_auth.py` for you.
-Three options — **all are supported; pick whichever you're comfortable with**
+Four options — **all are supported; pick whichever you're comfortable with**
 (Claude will state the trade-off and proceed with your choice):
+
+### Option D — browser cookies (easiest no-password route)
+
+Copy two cookie values from a logged-in Monarch browser session:
+
+1. Log in at app.monarchmoney.com in a desktop browser.
+2. DevTools (F12) → **Application** tab (Firefox: **Storage**) → **Cookies** →
+   `https://app.monarchmoney.com`.
+3. Copy the **Value** of the `csrftoken` and `sessionid` rows and give both to
+   Claude (or run locally:
+   `python monarch-money/scripts/setup_auth.py --csrf-token X --session-id Y`).
+
+The values are validated with one API call and saved to
+`data/cookie_session.json` (git-ignored). They expire with the browser session
+(typically weeks) — just re-copy when that happens.
 
 ### Option C — session token (no password shared)
 

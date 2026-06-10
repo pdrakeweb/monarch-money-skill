@@ -20,7 +20,16 @@ Option C (token — no password ever shared):
   pickle. No email, password, or MFA material is involved. This is the
   recommended path when auth is set up inside the claude.ai container.
 
-Nothing in this module ever prints the password, session token, or MFA secret.
+Option D (browser cookies — no password ever shared):
+    python scripts/setup_auth.py --csrf-token CSRFTOKEN --session-id SESSIONID
+  Takes the `csrftoken` and `sessionid` cookie values from a logged-in
+  app.monarchmoney.com browser session (DevTools -> Application -> Cookies),
+  validates them with a lightweight API call, and saves them to
+  data/cookie_session.json. Easiest extraction: the Cookies panel shows both
+  values directly, including the HttpOnly sessionid that JS cannot read.
+
+Nothing in this module ever prints the password, session token, MFA secret,
+or cookie values.
 """
 import argparse
 import asyncio
@@ -33,8 +42,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from monarch_client import (  # noqa: E402
-    classify_error, MonarchSkillError,
-    DEFAULT_SESSION_PATH, DEFAULT_CRED_PATH, DEFAULT_DATA_DIR,
+    classify_error, apply_cookie_auth, MonarchSkillError,
+    DEFAULT_SESSION_PATH, DEFAULT_CRED_PATH, DEFAULT_COOKIE_PATH,
+    DEFAULT_DATA_DIR,
 )
 
 
@@ -84,12 +94,23 @@ def write_credentials(cred_path, email, password, mfa_secret_key=None):
         pass  # best-effort on platforms without POSIX perms
 
 
+def write_cookie_session(cookie_path, csrf_token, session_id):
+    os.makedirs(os.path.dirname(os.path.abspath(cookie_path)), exist_ok=True)
+    with open(cookie_path, "w", encoding="utf-8") as fh:
+        json.dump({"csrftoken": csrf_token, "sessionid": session_id}, fh, indent=2)
+    try:
+        os.chmod(cookie_path, 0o600)
+    except OSError:
+        pass
+
+
 def run_setup(email=None, password=None, mfa_code=None, persist=False,
               session_path=DEFAULT_SESSION_PATH, cred_path=DEFAULT_CRED_PATH,
-              mfa_secret_key=None, token=None, mm=None):
-    """Perform login (or adopt a token), save the session, optionally persist
-    credentials. Returns a small status dict. Never returns or prints secret
-    material.
+              cookie_path=DEFAULT_COOKIE_PATH, mfa_secret_key=None, token=None,
+              csrf_token=None, session_id=None, mm=None):
+    """Perform login (or adopt a token / browser cookies), save the session,
+    optionally persist credentials. Returns a small status dict. Never returns
+    or prints secret material.
     """
     try:
         os.makedirs(os.path.dirname(os.path.abspath(session_path)), exist_ok=True)
@@ -102,6 +123,23 @@ def run_setup(email=None, password=None, mfa_code=None, persist=False,
     if mm is None:
         from monarchmoney import MonarchMoney
         mm = MonarchMoney(session_file=session_path)
+
+    if persist and (token or csrf_token):
+        raise MonarchSkillError(
+            "--persist-credentials requires --email/--password; it cannot be "
+            "combined with --token or --csrf-token (those are expiring "
+            "sessions, not reusable credentials)."
+        )
+
+    if csrf_token and session_id:
+        # Option D: adopt the browser's Django session cookies. Validate with
+        # one lightweight read, then persist to cookie_session.json (the
+        # library pickle can only hold bearer tokens).
+        apply_cookie_auth(mm, csrf_token, session_id)
+        _maybe_run(mm.get_subscription_details())
+        write_cookie_session(cookie_path, csrf_token, session_id)
+        return {"session_path": session_path, "cookie_path": cookie_path,
+                "persisted_credentials": False, "method": "cookies"}
 
     if token:
         # Option C: adopt an existing session token. Validate it with one
@@ -117,12 +155,6 @@ def run_setup(email=None, password=None, mfa_code=None, persist=False,
     result = {"session_path": session_path, "persisted_credentials": False,
               "method": "token" if token else "login"}
     if persist:
-        if token:
-            raise MonarchSkillError(
-                "--persist-credentials requires --email/--password; it cannot "
-                "be combined with --token (tokens expire and are not reusable "
-                "credentials)."
-            )
         write_credentials(cred_path, email, password, mfa_secret_key)
         result["persisted_credentials"] = True
         result["cred_path"] = cred_path
@@ -144,15 +176,27 @@ def main(argv=None):
     p.add_argument("--token",
                    help="Option C: existing Monarch session token (from the web "
                         "app's DevTools). No email/password needed.")
+    p.add_argument("--csrf-token",
+                   help="Option D: csrftoken cookie value from a logged-in "
+                        "app.monarchmoney.com browser session. Use with "
+                        "--session-id.")
+    p.add_argument("--session-id",
+                   help="Option D: sessionid cookie value (DevTools -> "
+                        "Application -> Cookies). Use with --csrf-token.")
     p.add_argument("--persist-credentials", action="store_true",
                    help="Option B: also store email+password+mfa_secret in "
                         "data/credentials.json. Requires user confirmation.")
     p.add_argument("--session-path", default=DEFAULT_SESSION_PATH)
     p.add_argument("--cred-path", default=DEFAULT_CRED_PATH)
+    p.add_argument("--cookie-path", default=DEFAULT_COOKIE_PATH)
     args = p.parse_args(argv)
 
-    if not args.token and not (args.email and args.password):
-        p.error("provide either --token, or both --email and --password")
+    if bool(args.csrf_token) != bool(args.session_id):
+        p.error("--csrf-token and --session-id must be provided together")
+    if not args.token and not args.csrf_token \
+            and not (args.email and args.password):
+        p.error("provide --token, or --csrf-token with --session-id, or both "
+                "--email and --password")
 
     try:
         result = run_setup(
@@ -162,8 +206,11 @@ def main(argv=None):
             persist=args.persist_credentials,
             session_path=args.session_path,
             cred_path=args.cred_path,
+            cookie_path=args.cookie_path,
             mfa_secret_key=args.mfa_secret_key,
             token=args.token,
+            csrf_token=args.csrf_token,
+            session_id=args.session_id,
         )
     except MonarchSkillError as exc:
         print(f"Auth setup failed: {exc}", file=sys.stderr)
@@ -174,6 +221,12 @@ def main(argv=None):
         return 1
 
     # Success message — deliberately mentions no secret material.
+    if result.get("method") == "cookies":
+        print("✓ Monarch cookie session saved to:", result["cookie_path"])
+        print("  Authenticated via browser cookies (Option D).")
+        print("  When the browser session expires, copy fresh cookie values "
+              "and re-run.")
+        return 0
     print("✓ Monarch session saved to:", result["session_path"])
     if result.get("method") == "token":
         print("  Authenticated via existing session token (Option C).")

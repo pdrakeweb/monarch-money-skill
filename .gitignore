@@ -2,6 +2,7 @@ monarch-money/data/
 *.pickle
 *.db
 credentials.json
+cookie_session.json
 *.zip
 __pycache__/
 *.pyc

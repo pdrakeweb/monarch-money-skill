@@ -40,9 +40,19 @@ API call (get_subscription_details) before the session pickle is saved. No
 email/password/MFA material is ever shared. Cannot be combined with
 --persist-credentials (tokens expire; they are not reusable credentials).
 
+**Option D (browser cookies):** `--csrf-token X --session-id Y`. Monarch's
+backend is Django; a logged-in browser holds `csrftoken` and `sessionid`
+cookies, visible in DevTools → Application → Cookies (including the HttpOnly
+sessionid). apply_cookie_auth() injects Cookie / X-CSRFToken / Origin / Referer
+into the library's _headers dict, which feeds every GraphQL request. Validated
+at setup with one API call; persisted to data/cookie_session.json (the library
+pickle can only hold bearer tokens). ensure_authenticated() order: token
+pickle → cookie session → persisted credentials → AuthExpiredError.
+
 This matters because users may have no local Python: the skill executes in
-Anthropic's container (which has Python), so all three options can run
-in-conversation. SKILL.md instructs Claude to state the trade-offs first
+Anthropic's container (which has Python), so all options can run
+in-conversation. SKILL.md instructs Claude to state the trade-offs once and
+proceed with the user's choice — never refuse an option the user picked
 (password transits chat history for A/B; TOTP codes expire in 30s).
 
 Session expiry: catch LoginFailedException → classified error → exit 1.

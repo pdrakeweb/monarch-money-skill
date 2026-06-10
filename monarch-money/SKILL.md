@@ -45,9 +45,9 @@ The user does NOT need Python locally — `setup_auth.py` runs right here in the
 skill container. **Never instruct the user to run code or scripts on their own
 machine**; everything below executes in this environment.
 
-**All three options are legitimate and supported.** Briefly state the
-trade-off of the user's chosen option ONCE, then proceed with it. Do NOT
-refuse email/password/MFA (Option A) or insist on the token option — the user
+**All options are legitimate and supported.** Briefly state the trade-off of
+the user's chosen option ONCE, then proceed with it. Do NOT refuse
+email/password/MFA (Option A) or insist on a token/cookie option — the user
 decides what they're comfortable sharing. If the user has already provided
 credentials, use them; lecturing or stalling is worse than proceeding.
 
@@ -67,6 +67,29 @@ python scripts/setup_auth.py --email you@example.com \
 Saves `data/session.pickle` only — the password is **never** written to disk.
 If the code expired mid-flight (login failure), just ask for a new code and
 re-run; nothing is left in a bad state.
+
+### Option D — browser cookies (easiest no-password route)
+
+The user copies two cookie values from a logged-in Monarch browser session.
+This is simpler than token hunting because DevTools lists cookies by name in a
+table — including the HttpOnly `sessionid` that JavaScript can't read:
+
+1. Log in at **app.monarchmoney.com** in a desktop browser.
+2. DevTools (F12) → **Application** tab (Firefox: **Storage**) →
+   **Cookies** → `https://app.monarchmoney.com`.
+3. Copy the **Value** of the `csrftoken` row and the `sessionid` row.
+4. Paste both in the chat.
+
+```
+python scripts/setup_auth.py --csrf-token CSRFTOKEN --session-id SESSIONID
+```
+
+Validates with one lightweight API call, then saves
+`data/cookie_session.json`. The cookies last as long as the browser session
+would (typically weeks); on expiry (`AuthExpiredError`) ask for fresh values.
+Note: if Monarch's API rejects cookie auth for GraphQL (it can change this
+server-side), the validation call fails immediately — fall back to Option A
+or C rather than debugging.
 
 ### Option B — persisted credentials (zero-touch, opt-in)
 
@@ -214,7 +237,7 @@ Say this plainly; don't imply lot-level precision the data can't support.
 
 | Symptom (error JSON on stdout / stderr) | Meaning | Fix |
 |------|---------|-----|
-| `AuthExpiredError` | Session dead / 401 | Re-run `setup_auth.py` — ask the user for a fresh token (Option C) or a fresh `--mfa-code` (Option A) |
+| `AuthExpiredError` | Session dead / 401 | Re-run `setup_auth.py` — ask the user for a fresh `--mfa-code` (Option A), cookie values (Option D), or token (Option C) |
 | `SchemaChangedError` | Monarch GraphQL changed | `pip install -U monarchmoneycommunity` |
 | `NetworkError` | Can't reach api.monarch.com | Check container network egress |
 

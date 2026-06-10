@@ -23,6 +23,7 @@ def _paths(tmp_path):
 def _fake_mm(session_path):
     """A MagicMock MonarchMoney whose save_session writes a real pickle file."""
     mm = MagicMock()
+    mm._headers = {}  # real dict so cookie-header injection is observable
 
     def _save(path=None):
         with open(path or session_path, "wb") as fh:
@@ -124,3 +125,64 @@ def test_token_with_persist_rejected(tmp_path):
 def test_no_token_and_no_credentials_errors(capsys):
     with pytest.raises(SystemExit):
         setup_auth.main([])
+
+
+def test_option_d_cookie_saves_cookie_session(tmp_path):
+    session_path, cred_path = _paths(tmp_path)
+    cookie_path = str(tmp_path / "cookie_session.json")
+    mm = _fake_mm(session_path)
+    result = setup_auth.run_setup(
+        csrf_token="csrf_abc", session_id="sess_xyz",
+        session_path=session_path, cred_path=cred_path,
+        cookie_path=cookie_path, mm=mm,
+    )
+    # Headers injected for Django session auth.
+    assert "csrftoken=csrf_abc" in mm._headers["Cookie"]
+    assert "sessionid=sess_xyz" in mm._headers["Cookie"]
+    assert mm._headers["X-CSRFToken"] == "csrf_abc"
+    assert mm._headers["Origin"] == "https://app.monarchmoney.com"
+    mm.get_subscription_details.assert_called_once()  # validation ping
+    mm.login.assert_not_called()
+    mm.save_session.assert_not_called()  # no bearer token to pickle
+    assert result["method"] == "cookies"
+    with open(cookie_path) as fh:
+        saved = json.load(fh)
+    assert saved == {"csrftoken": "csrf_abc", "sessionid": "sess_xyz"}
+    assert not os.path.exists(cred_path)
+
+
+def test_option_d_cookie_values_not_in_stdout(tmp_path, capsys, monkeypatch):
+    session_path, _ = _paths(tmp_path)
+    cookie_path = str(tmp_path / "cookie_session.json")
+    monkeypatch.setattr(setup_auth, "run_setup", lambda **kw: {
+        "session_path": session_path, "persisted_credentials": False,
+        "method": "cookies", "cookie_path": cookie_path})
+    code = setup_auth.main(
+        ["--csrf-token", "csrf_secret_789", "--session-id", "sess_secret_000"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "csrf_secret_789" not in out
+    assert "sess_secret_000" not in out
+
+
+def test_option_d_requires_both_cookies(capsys):
+    with pytest.raises(SystemExit):
+        setup_auth.main(["--csrf-token", "only_one"])
+
+
+def test_ensure_authenticated_falls_back_to_cookie_session(tmp_path):
+    from monarch_client import MonarchClient
+    cookie_path = str(tmp_path / "cookie_session.json")
+    with open(cookie_path, "w") as fh:
+        json.dump({"csrftoken": "c1", "sessionid": "s1"}, fh)
+    client = MonarchClient.ensure_authenticated(
+        session_path=str(tmp_path / "missing.pickle"),
+        cred_path=str(tmp_path / "missing_creds.json"),
+        cache_path=str(tmp_path / "cache.db"),
+        cookie_path=cookie_path,
+    )
+    try:
+        assert "sessionid=s1" in client.mm._headers["Cookie"]
+        assert client.mm._headers["X-CSRFToken"] == "c1"
+    finally:
+        client.cache.close()
