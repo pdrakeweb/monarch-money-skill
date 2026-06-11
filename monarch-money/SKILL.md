@@ -1,6 +1,6 @@
 ---
 name: "monarch-money"
-version: "0.6.0"
+version: "0.6.1"
 description: >
   Access and analyze the user's Monarch Money financial data: accounts, balances,
   net worth, investment holdings, transactions, budgets, and cashflow. Use this
@@ -23,15 +23,27 @@ All commands run from the skill directory:
 ## 0. Where data lives (persists across chat sessions)
 
 The cache, session, and auth files live in a **persistent data directory**,
-NOT the skill-relative `data/` (which dies with each session's container):
-`/mnt/user-data/.claude-skills/monarch-money/` in cloud sessions,
-`~/.claude-skills/monarch-money/` on desktop, `$MONARCH_MONEY_DATA_DIR` to
-override. Get the exact path from `python scripts/fetch.py status` (the
-`Database:` line) and query THAT file. Auth done in a previous session is
-picked up automatically — check `auth-status` before asking the user to log
-in again. A `.env` there with `MONARCH_COOKIES="session_id=…; csrftoken=…"`
-(or `MONARCH_EMAIL`/`MONARCH_PASSWORD`/`MONARCH_MFA_SECRET`) gives every new
-session zero-touch reauth as a last-resort fallback.
+NOT the skill-relative `data/`. `python scripts/fetch.py auth-status` prints
+the exact dir AND a persistence verdict. **Always check `auth-status` before
+asking the user to log in again** — auth from a previous session is reused
+automatically.
+
+Persistence depends on where the skill runs (full detail in
+`references/persistence.md`):
+- **Desktop:** `~/.claude-skills/monarch-money/` — survives new chats AND skill
+  updates. Set up auth once.
+- **Cloud / mobile:** the container dir persists **within one conversation
+  only**; a new chat starts fresh. So filesystem auth does NOT carry across
+  chats there — that's a platform limit, not a bug.
+
+If the user reports "lost credentials after updating the skill": versions
+before v0.6.0 saved auth *inside* the skill package's `data/`, which a
+re-upload wipes. v0.6.0+ fixed that (auth now lives in the persistent dir).
+For cross-chat/cross-device zero-touch auth, a `.env` with `MONARCH_COOKIES`
+(or `MONARCH_EMAIL`/`MONARCH_PASSWORD`/`MONARCH_MFA_SECRET`) bundled via
+`build.ps1 -IncludeAuth` is the durable mechanism — see
+`references/persistence.md`. Do NOT just ask them to re-auth without
+explaining whether it will persist.
 
 ## 1. Decision tree
 

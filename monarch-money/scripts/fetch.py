@@ -618,7 +618,14 @@ def render_status(cache):
 
 
 def render_auth_status(session_path, cred_path, cookie_path):
+    from skill_common import data_dir_persistence
+    data_dir = os.path.dirname(os.path.abspath(session_path))
+    kind, why = data_dir_persistence(data_dir)
     print("## Auth Status\n")
+    print(f"Data directory: {data_dir}")
+    mark = "✓" if kind in ("home",) else ("⚠" if kind in ("skill", "temp") else "•")
+    print(f"  {mark} Persistence: {kind} — {why}")
+    env_path = os.path.join(data_dir, ".env")
     print(f"Session file: {session_path}")
     if os.path.exists(session_path):
         mtime = os.path.getmtime(session_path)
@@ -647,9 +654,15 @@ def render_auth_status(session_path, cred_path, cookie_path):
         print("Credentials file: present (Option B — zero-touch reauth enabled)")
     else:
         print("Credentials file: not present")
+    print(f"Env file: {'present' if os.path.exists(env_path) else 'not present'} "
+          f"({env_path})")
     if not os.path.exists(session_path) and not os.path.exists(cookie_path) \
-            and not os.path.exists(cred_path):
+            and not os.path.exists(cred_path) and not os.path.exists(env_path):
         print("\nNo auth configured — run scripts/setup_auth.py first.")
+        if kind == "cloud":
+            print("Note: this is a per-conversation container. For auth that "
+                  "survives new chats / other devices, bundle a .env via "
+                  "`build.ps1 -IncludeAuth` (see references/persistence.md).")
 
 
 # --------------------------------------------------------------------------- #

@@ -247,6 +247,21 @@ def main(argv=None):
         print(f"Auth setup failed: {classified}", file=sys.stderr)
         return 1
 
+    # Report where it saved and whether that survives — the persistence
+    # question that bit us (old skill saved into the package's data/).
+    try:
+        from skill_common import data_dir_persistence
+        ddir = os.path.dirname(os.path.abspath(result["session_path"]))
+        kind, why = data_dir_persistence(ddir)
+        print(f"  Data dir: {ddir}")
+        print(f"  Persistence: {kind} — {why}")
+        if kind in ("skill", "temp"):
+            print("  ⚠ This location is NOT durable. For auth that survives "
+                  "skill updates / new chats, see references/persistence.md "
+                  "(home dir on desktop, or bundle a .env via -IncludeAuth).")
+    except Exception:  # noqa: BLE001
+        pass
+
     # Success message — deliberately mentions no secret material.
     if result.get("method") == "cookies":
         print("✓ Monarch cookie session saved to:", result["session_path"])
