@@ -30,7 +30,7 @@ from skill_common import (                               # noqa: E402
     SkillError, resolve_data_dir, bootstrap_data, load_dotenv,
 )
 # Per-skill schema + version (skill_schema.py is monarch's, not skeleton's).
-from skill_schema import SKILL_VERSION, SCHEMA           # noqa: E402,F401
+from skill_schema import SKILL_VERSION, SCHEMA, V2_DDL   # noqa: E402,F401
 
 
 # --------------------------------------------------------------------------- #
@@ -127,7 +127,44 @@ class MonarchCache(SkillCache):
     monarch-specific write methods and tax-bucket logic below."""
 
     def __init__(self, db_path):
+        # Capture the on-disk schema_version BEFORE the parent stamps the new
+        # one, so _migrate_schema can tell a fresh/v2 db from an upgraded v1.
+        prior = self._read_prior_version(db_path)
         super().__init__(db_path, SCHEMA)
+        self._migrate_schema(prior)
+
+    # ---- schema migration --------------------------------------------- #
+    @staticmethod
+    def _read_prior_version(db_path):
+        """Return the schema_version stored in an existing db file, or None for
+        a brand-new (or in-memory) database. Best-effort: any read failure is
+        treated as 'no prior version'."""
+        if db_path == ":memory:" or not os.path.exists(db_path):
+            return None
+        try:
+            conn = sqlite3.connect(db_path, timeout=5.0)
+            try:
+                row = conn.execute(
+                    "SELECT value FROM meta WHERE key='schema_version'"
+                ).fetchone()
+            finally:
+                conn.close()
+            return int(row[0]) if row and row[0] is not None else None
+        except (sqlite3.Error, ValueError):
+            return None
+
+    def _migrate_schema(self, prior_version):
+        """Run on every cache init. SkillCache already executed the full DDL
+        (all CREATE ... IF NOT EXISTS, including the v2 tables) and stamped the
+        current schema_version. This makes the v1->v2 transition explicit and
+        idempotent: a database that predates v2 gets the new snapshot tables
+        ensured here, so the upgrade is driven by the version marker rather
+        than relying solely on the union DDL.
+
+        prior_version is None for a fresh/in-memory db (nothing to migrate)."""
+        if prior_version is not None and prior_version < 2:
+            self._conn.executescript(V2_DDL)
+            self._conn.commit()
 
     # ---- accounts ----------------------------------------------------- #
     def write_accounts(self, rows):
@@ -271,6 +308,38 @@ class MonarchCache(SkillCache):
             )
         self._conn.commit()
 
+    # ---- net worth history (v2) --------------------------------------- #
+    def write_net_worth_history(self, rows):
+        """Daily net-worth snapshots (one row per date). INSERT OR REPLACE so
+        re-syncing a date overwrites it idempotently. Each row:
+        {date, total, assets, liabilities}."""
+        now = int(time.time())
+        for r in rows:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO net_worth_history "
+                "(date, total, assets, liabilities, fetched_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    r.get("date"), r.get("total"), r.get("assets"),
+                    r.get("liabilities"), now,
+                ),
+            )
+        self._conn.commit()
+
+    # ---- account balance history (v2) --------------------------------- #
+    def write_account_history(self, account_id, rows):
+        """Daily per-account balance snapshots. INSERT OR REPLACE keyed on
+        (account_id, date) — idempotent. Each row: {date, balance}."""
+        now = int(time.time())
+        for r in rows:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO account_history "
+                "(account_id, date, balance, fetched_at) "
+                "VALUES (?, ?, ?, ?)",
+                (account_id, r.get("date"), r.get("balance"), now),
+            )
+        self._conn.commit()
+
     # ---- tx sync marker & counters (thin wrappers over skeleton meta) -- #
     def get_last_tx_sync(self):
         return self.get_meta("last_tx_sync")
@@ -368,7 +437,63 @@ DEFAULT_COOKIE_PATH = os.path.join(DEFAULT_DATA_DIR, "cookie_session.json")
 DEFAULT_ENV_PATH = os.path.join(DEFAULT_DATA_DIR, ".env")
 DEFAULT_DB_PATH = os.path.join(DEFAULT_DATA_DIR, "monarch_cache.db")
 
+# Where Monarch MCP servers conventionally drop their own session pickle. The
+# robcerda/monarch-mcp-server saves `.mm/mm_session.pickle` relative to where
+# login_setup.py ran — typically the MCP server's repo dir (which may sit
+# beside this skill) or the user's home. We can share that session so MCP-mode
+# users don't have to re-authenticate the skill separately.
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_SKILL_DIR)
+DEFAULT_MCP_REPO_SESSION = os.path.join(_REPO_ROOT, ".mm", "mm_session.pickle")
+DEFAULT_HOME_MCP_SESSION = os.path.join(
+    os.path.expanduser("~"), ".mm", "mm_session.pickle")
+
 MONARCH_ORIGIN = "https://app.monarch.com"
+
+
+def _config_session_path(start_dir):
+    """Walk up from start_dir looking for a config.json carrying a
+    `session_path` key; return that path (user-expanded) if it exists on disk,
+    else None. Lets a user point the skill at an MCP session in a custom
+    location without code changes."""
+    d = os.path.abspath(start_dir)
+    while True:
+        cfg = os.path.join(d, "config.json")
+        if os.path.isfile(cfg):
+            try:
+                with open(cfg, "r", encoding="utf-8") as fh:
+                    sp = json.load(fh).get("session_path")
+                if sp:
+                    sp = os.path.expanduser(sp)
+                    if os.path.exists(sp):
+                        return sp
+            except (OSError, ValueError):
+                pass
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def _find_session(session_path=DEFAULT_SESSION_PATH,
+                  mcp_repo_session=DEFAULT_MCP_REPO_SESSION,
+                  home_mcp_session=DEFAULT_HOME_MCP_SESSION,
+                  config_search_dir=_SCRIPTS_DIR):
+    """Locate a usable Monarch session pickle, in priority order:
+
+      1. ``session_path`` — the skill's own saved session (persistent data dir)
+      2. ``<repo>/.mm/mm_session.pickle`` — an MCP server run in/beside the repo
+      3. ``~/.mm/mm_session.pickle`` — an MCP server installed elsewhere
+      4. a ``session_path`` from a ``config.json`` found walking up from the
+         scripts dir
+
+    Returns the first path that exists, or None if nothing is found. The
+    caller logs the chosen path to STDERR (never stdout — keeps machine-
+    parseable Markdown/JSON clean)."""
+    for candidate in (session_path, mcp_repo_session, home_mcp_session):
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return _config_session_path(config_search_dir)
 
 
 def apply_cookie_auth(mm, csrftoken, session_id):
@@ -516,13 +641,18 @@ class MonarchClient:
     def from_session(cls, session_path=DEFAULT_SESSION_PATH,
                      cache_path=DEFAULT_DB_PATH):
         from monarchmoney import MonarchMoney
-        if not os.path.exists(session_path):
+        found = _find_session(session_path)
+        if found is None:
             raise AuthExpiredError(
                 "No saved Monarch session. Run scripts/setup_auth.py first."
             )
-        mm = MonarchMoney(session_file=session_path)
+        if found != session_path:
+            # MCP-shared session — note where it came from (stderr, not stdout).
+            print(f"[monarch] using shared session pickle at {found}",
+                  file=sys.stderr)
+        mm = MonarchMoney(session_file=found)
         try:
-            mm.load_session(session_path)
+            mm.load_session(found)
         except Exception as exc:  # noqa: BLE001
             # A session that won't load (corrupt / expired / wrong format) is an
             # auth problem, not schema drift — re-authentication is the fix.
