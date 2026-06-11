@@ -9,6 +9,49 @@ SQLite offline cache, and exposes a CLI that Claude invokes via `scripts/fetch.p
 Claude does NOT get raw data dumps. Scripts print compact Markdown summaries to
 stdout; Claude queries the SQLite cache directly with pandas/SQL for analysis.
 
+## Dual-Mode Operation
+
+The skill retrieves live data one of two ways; the SQLite cache and all
+analysis are identical either way.
+
+**Detection.** Claude probes for a connected Monarch Money MCP server
+(`check_auth_status` for robcerda/monarch-mcp-server, or `get_accounts`). If a
+tool answers, **MCP mode** is active; if the tools are absent, the skill stays
+in **Direct mode** and drives `fetch.py` as before. fetch.py is never removed —
+it is the fallback and the only path when no MCP is connected.
+
+**The bridge — `cache_writer.py`.** In MCP mode Claude calls the MCP read
+tools for live data, then pipes their JSON through `scripts/cache_writer.py`,
+which writes it into the same `monarch_cache.db` fetch.py uses. cache_writer
+reuses fetch.py's normalisers (camelCase / nested-GraphQL → snake_case) and
+MonarchCache's write methods, so the two modes can never produce divergent
+rows. It normalises field-name variants, degrades missing fields to NULL,
+silently drops unknown fields (forward-compatible with newer MCP tool
+versions), runs tax-bucket classification on accounts, keeps transaction
+inserts idempotent, and emits the same `{"error","message"}`/exit-1 contract
+on failure. fetch.py still owns retrieval+caching in Direct mode; in MCP mode
+the skill's scripts are used only for caching and analysis.
+
+**Session sharing.** MCP servers save their own session pickle (robcerda:
+`.mm/mm_session.pickle`, relative to where its login ran). `_find_session()`
+checks, in priority order: the skill's own session → `<repo>/.mm/mm_session.pickle`
+→ `~/.mm/mm_session.pickle` → a `session_path` from a `config.json` walking up
+from the scripts dir. `MonarchClient.from_session` uses it, logging the chosen
+path to stderr. So when an MCP is connected, the skill's own Direct-mode auth
+usually needs no separate setup.
+
+**New capability — net-worth history.** MCP exposes daily net-worth and
+per-account balance snapshots (`get_net_worth`,
+`get_account_balance_history`) that fetch.py never pulled. cache_writer writes
+these to two v2 tables (`net_worth_history`, `account_history`), unlocking
+trend analysis the Direct-mode path didn't have.
+
+**Implementation agnosticism.** The design targets tool *shapes*, not a
+specific server. The official first-party Monarch MCP may name tools
+differently; the SKILL.md mapping table and the api_surface.md probe note tell
+Claude to discover tool names and adapt, and cache_writer's liberal shape
+extractors accept list/wrapped/nested payloads from any implementation.
+
 ## Repository Layout
 
 ```
@@ -17,7 +60,8 @@ monarch-money/          ← folder name MUST match SKILL.md frontmatter `name`
 ├── scripts/
 │   ├── monarch_client.py    ← session load, client init, error classification
 │   ├── setup_auth.py        ← one-time login, writes session pickle
-│   └── fetch.py             ← data retrieval + cache; all subcommands
+│   ├── fetch.py             ← Direct mode: data retrieval + cache; subcommands
+│   └── cache_writer.py      ← MCP mode: pipe MCP tool JSON → SQLite cache
 ├── references/
 │   └── api_surface.md
 └── data/                    ← created at runtime (empty in ZIP package)
@@ -128,9 +172,27 @@ savings_rate REAL, by_category_json TEXT, by_group_json TEXT, fetched_at INT
 ### recurring (TTL: 4h)
 id TEXT PK, merchant, amount REAL, frequency, next_date TEXT, account_id, fetched_at INT
 
+### net_worth_history (permanent; schema v2, MCP-mode only)
+date TEXT PK (ISO-8601), total REAL, assets REAL, liabilities REAL, fetched_at INT
+Daily net-worth snapshots from `get_net_worth`. INSERT OR REPLACE (idempotent
+per date). Populated by `cache_writer.py --table net-worth-history`.
+
+### account_history (permanent; schema v2, MCP-mode only)
+account_id TEXT, date TEXT (ISO-8601), balance REAL, fetched_at INT
+PRIMARY KEY (account_id, date)
+Daily per-account balance snapshots from `get_account_balance_history`.
+INSERT OR REPLACE (idempotent). Populated by
+`cache_writer.py --table account-balance-history --account-id ID`.
+
 ### meta
 key TEXT PK, value TEXT
 Keys: last_full_sync, last_tx_sync, schema_version, api_call_count
+
+**Schema migrations.** `schema_version` lives in `meta`. The base DDL is the
+union of all versions (`CREATE TABLE IF NOT EXISTS`), so fresh installs get
+every table at once. `MonarchCache._migrate_schema` captures the on-disk
+version before init and, for a pre-v2 database, explicitly (re)creates the v2
+snapshot tables — making the v1→v2 upgrade marker-driven and idempotent.
 
 ## Write Policy Enforcement
 

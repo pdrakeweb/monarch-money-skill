@@ -1,5 +1,36 @@
 # Monarch API surface (`monarchmoneycommunity` 1.4.0)
 
+## MCP Tool Reference (robcerda/monarch-mcp-server)
+
+When the MCP is connected, use these tool names instead of fetch.py subcommands.
+Output from each tool feeds into cache_writer.py (see SKILL.md Dual-Mode section).
+
+| fetch.py subcommand | MCP tool | Key parameters |
+|---------------------|----------|----------------|
+| accounts | `get_accounts` | none |
+| holdings | `get_account_holdings` | `account_id` |
+| transactions | `get_transactions` | `start_date`, `end_date`, `limit` (use 500+) |
+| budgets | `get_budgets` | `start_date`, `end_date` |
+| cashflow | `get_cashflow` | `start_date`, `end_date` |
+| recurring | `get_recurring_transactions` | none |
+| net-worth | `get_net_worth` | `start_date`, `end_date` |
+| (new) account-balance-history | `get_account_balance_history` | `account_id` |
+| (new) spending-summary | `get_spending_summary` | `start_date`, `end_date`, `limit` |
+| (new) review-queue | `get_transactions_needing_review` | `days`, `uncategorized`, `no_notes` |
+
+## Auth tools
+| Tool | Purpose |
+|------|---------|
+| `check_auth_status` | Verify MCP connection + session validity |
+| `setup_authentication` | Get setup instructions if session missing |
+
+## Official Monarch MCP note
+The first-party Monarch MCP (monarchmoney.com) may use different tool names.
+To probe: list available MCP tools and look for tools containing "accounts",
+"transactions", or "monarch" in their names. Adapt the mapping accordingly.
+
+---
+
 The skill wraps the **`monarchmoney`** package (community fork, MIT). Every
 method is **async** — call it with `asyncio.run(mm.method(...))`. The library
 pins `gql==4.0`; do not override.
