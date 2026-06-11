@@ -1,0 +1,7 @@
+{"accounts":[
+ {"id":"a_tax","name":"Fidelity Taxable","type":"Brokerage (Taxable)","balance":1318595},
+ {"id":"a_trad","name":"Rollover 401k","type":"401k","balance":920748},
+ {"id":"a_roth","name":"Roth IRA","type":"Roth IRA","balance":579076},
+ {"id":"a_hsa","name":"HSA","type":"Health Savings Account (HSA)","balance":115123},
+ {"id":"a_daf","name":"CHARITABLE FUND (Daffy)","type":"Other","balance":205616}
+]}

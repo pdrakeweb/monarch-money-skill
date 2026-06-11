@@ -1,21 +1,25 @@
 ---
 name: "monarch-money"
-version: "0.9.0"
+version: "1.0.0"
 description: >
-  Access and analyze the user's Monarch Money financial data: accounts, balances,
-  net worth, investment holdings, transactions, budgets, and cashflow. Use this
-  skill whenever the user asks about their finances, spending, portfolio, net worth,
-  account balances, transactions, budget, savings rate, investment allocation,
-  tax-loss harvesting opportunities, subscription costs, or anything requiring
-  their actual financial data — even if they don't mention Monarch by name.
+  Connect to and sync the user's Monarch Money account into a local cache:
+  authentication/login, accounts and balances, investment holdings,
+  transactions, budgets, cashflow, recurring, net-worth history. Use this skill
+  to set up Monarch access, refresh data, or answer raw balance/transaction
+  questions — even if they don't say Monarch by name. This is the DATA LAYER:
+  for reports & dashboards (net worth, spending, allocation, tax-loss
+  harvesting) the **personal-finance** skill consumes this cache; for
+  retirement planning (FIRE, drawdown, TPAW, Social Security, retire-age
+  what-ifs) the **retirement** skill does.
 ---
 
-# Monarch Money
+# Monarch Money (data layer)
 
-Surfaces the user's real Monarch Money data for conversational analysis. Scripts
-sync data into a local SQLite cache and print compact Markdown summaries. **For
-any real analysis, query the SQLite cache directly** with SQL/pandas — don't
-ask the scripts to dump raw rows.
+The **data layer** of a three-skill family. It syncs the user's Monarch Money
+account into a local SQLite cache (`monarch_cache.db`); the **personal-finance**
+and **retirement** skills read that cache for analysis and planning. This skill
+holds NO reports or financial opinions — it gets the data in, correctly and
+securely. Cache & profile contracts: `references/CONTRACTS.md`.
 
 All commands run from the skill directory:
 `python scripts/fetch.py <command> [flags]`
@@ -254,11 +258,11 @@ integration or another tool.
 | `status` | Cache row counts, ages, lifetime API calls | — |
 | `auth-status` | Session age + expiry estimate | — |
 | `clear-cache` | Empty the local cache; next sync re-pulls and re-infers tax buckets | `--include-user-buckets` |
-| `dashboard` | Boglehead/FIRE dashboard: KPI header + all 11 reports in summary with links | — |
-| `report <key>` | One full report (`report all` = every full report in one call) | — |
-| `reports` | List the 11 report keys | — |
-| `profile` | Profile path + completeness + active SWR | — |
 | `version` | Print the installed skill version | — |
+
+`dashboard` / `report` / `reports` / `profile` were **removed in v1.0.0** (the
+three-skill split) — they print a redirect to the personal-finance / retirement
+skills. Reports, the dashboard, and the profile interview now live there.
 
 If the user asks **which version of the skill is installed**, you MUST run
 `python scripts/fetch.py version` and report THAT output — never answer from
@@ -274,19 +278,17 @@ Global: `--refresh` bypasses TTL. (`--mock` exists for development against the
 repo's `tests/fixtures/` — those fixtures are not packaged in the deployed
 skill, so don't offer it to the user.)
 
-## 4. Worked examples
+## 4. Worked examples (data layer)
 
-### Net worth snapshot
 ```
-python scripts/fetch.py accounts          # syncs + prints table & net worth
+python scripts/fetch.py sync-all          # full sync, all tables
+python scripts/fetch.py status            # cache row counts, ages, schema
+python scripts/fetch.py net-worth         # net worth from cache (no API call)
 ```
-For a breakdown by type without an API call: `python scripts/fetch.py net-worth`.
 
-### Asset location by tax bucket
-```
-python scripts/fetch.py accounts          # ensures tax buckets are populated
-```
-Then query the cache:
+After syncing, **query `monarch_cache.db` directly** for anything beyond the
+built-in summaries — e.g. balances by tax bucket:
+
 ```sql
 SELECT b.tax_bucket, ROUND(SUM(a.balance),2) total
 FROM accounts a JOIN account_tax_buckets b ON a.id=b.account_id
@@ -294,122 +296,10 @@ WHERE a.type IN ('investment','brokerage') AND a.is_hidden=0
 GROUP BY b.tax_bucket ORDER BY total DESC;
 ```
 
-### Tax-loss-harvesting screen
-```
-python scripts/fetch.py holdings
-```
-```sql
-SELECT account_id, ticker, value, cost_basis,
-       ROUND(value-cost_basis,2) AS unrealized_pl
-FROM holdings
-WHERE cost_basis IS NOT NULL    -- unknown basis (incl. Monarch's 0) is NULL
-  AND ticker IS NOT NULL        -- employer-plan funds have no public ticker
-  AND value < cost_basis
-ORDER BY unrealized_pl ASC;
-```
-⚠ **Always state the lot-level caveat** (§6) when surfacing TLH candidates.
+For reports, the dashboard, allocation/TLH analysis, the profile interview, and
+retirement planning, the **personal-finance** and **retirement** skills consume
+this same cache (read-only) and own that logic. See `references/CONTRACTS.md`.
 
-### Monthly cashflow, 3-month rolling
-```
-python scripts/fetch.py cashflow --months 3
-```
-
-## 2b. First-run profile interview (do this before the first dashboard)
-
-The reports depend on `profile.json` (in the data dir; `fetch.py profile` shows
-status). When it's missing or has `"profile_complete": false`, **run an intake
-interview before computing** — you conduct it, it is not a code loop. Order:
-
-1. **Pre-fill from context FIRST — do NOT ask for what you already know.**
-   Populate every field you can from this conversation, memory, and the cached
-   data before asking anything. Examples that must be inferred, not asked:
-   tax-bucket balances → Roth/trad/taxable shares; holdings → risk posture and
-   sector tilts; mortgage transactions → payoff interaction; observed
-   allocation → risk tolerance confirmation. Asking for a known fact is a
-   failure.
-2. **Research-fill defaults** for anything not in context (SWR from horizon,
-   healthcare bridge from typical ACA costs, effective retirement tax rates),
-   and mark them as assumptions.
-3. **Ask ONLY the genuine gaps, batched, with pick-lists** (the surface has a
-   tappable multi-select — use it; don't make the user free-type a choosable
-   value). Question bank (ask only what context can't answer):
-   - **birth year as a NUMBER** (e.g. "1976") — never an age range; the
-     horizon math is sensitive and a range pick produced a 4-year error in the
-     field. Then target retirement age; life-expectancy planning age
-     (default 95).
-   - **withdrawal philosophy** (pick-list): fixed SWR / Guyton-Klinger
-     guardrails / **TPAW** (amortization-based variable withdrawal) →
-     `withdrawal_strategy`.
-   - **spending tilt** (pick-list): flat / **front-load** (earlier years worth
-     more — die-with-zero) / back-load → `spending_tilt_pct` (front-load =
-     negative, e.g. −1.5%).
-   - **income streams**: Social Security estimate + claim age, pensions →
-     `income_streams` (PV'd as bonds into the TPAW total portfolio).
-   - **annual new savings** to retirement (`annual_new_savings`) — ASK
-     explicitly and say WHY it can't be inferred: brokerage buys/sells churn
-     through transactions so it's not observable from the cache (A4). Needed
-     for the FIRE trajectory and the MC accumulation phase.
-   - anticipated expense changes at 1y/5y/10y (pick-list: new vehicle,
-     boat/upgrade, remodel, move/new mortgage, child costs start/end,
-     healthcare change, eldercare, none) + amount + horizon → routes to
-     `anticipated_changes` (`one_time` or `lumpy`).
-   - **risk tolerance phrased as confidence** (pick-list): "must never cut" /
-     "small cuts OK" / "wide bands OK — 50–60% confidence". Maps onto the MC
-     confidence readouts and guardrail/TPAW band width. Confirm against
-     observed allocation rather than asking blind.
-   - risk capacity (years to retirement, income stability, % of NW
-     discretionary).
-   - sector/factor views 1y/5y/10y (pick-list: AI/semis, broad tech,
-     healthcare/biotech, energy, financials, industrials, intl developed, EM,
-     small-cap value, broad/no-tilt) + over/underweight → `sector_views`.
-   - retirement relocation to a no-income-tax state? → tax model.
-   - charitable intent + DAF in use/planned → Net Means treatment.
-   - legacy intent: spend-down (die-with-zero) vs leave-estate.
-   - mortgage payoff intent (early vs term) → `mortgage_payoff_age`.
-4. **Write `profile.json`** (in the data dir) with the answers +
-   `"profile_complete": true`, then compute and render.
-
-The dashboard prints a "Profile incomplete" banner until this is done.
-
-## 4b. Boglehead / FIRE reports & dashboard
-
-The skill ships **11 reports** plus a **comprehensive dashboard**, all computed
-from the cache (no API calls). Keys: `net-worth`, `allocation`,
-`asset-location`, `fire-progress`, `withdrawal`, `savings-rate`, `expenses`,
-`emergency-fund`, `tlh`, `concentration`, `life-value`.
-
-- One report: `python scripts/fetch.py report fire-progress`
-- Every full report at once: `python scripts/fetch.py report all`
-- The dashboard: `python scripts/fetch.py dashboard`
-
-**Sync first** (`sync-all`). **Run the §2b interview** if the profile is
-incomplete. Then build the deliverable: run `fetch.py dashboard` AND
-`fetch.py report all`, and render **one self-contained HTML artifact** — KPI
-strip + a summary card per report, each linking (accordion/anchor) to the
-embedded full body. Numbers are precomputed — embed them. Offer theme-factory
-for styling.
-
-**What the math now does correctly (don't undo this):**
-- **Outflows are classified.** Investment buys, 401k/IRA/HSA contributions, and
-  debt principal are `transfer` (savings, NOT expenses); a boat/remodel is
-  `one_time` (excluded from the run-rate, shown separately); car/roof/HVAC are
-  `lumpy` (amortized sinking-fund allowances). Only `recurring` is the budget.
-- **FIRE number is built on the projected RETIREMENT budget**, grossed up for
-  the trad/LTCG-taxed share of withdrawals, ÷ a **horizon-derived SWR** (not a
-  flat 4%). State the SWR source and tax assumptions when presenting.
-- **Savings rate is positive and sane** — consumption-based, with capital
-  deployed shown separately; one-time-distorted months flagged.
-- **Life-value framing:** experiential/charitable spend is the point, not
-  leakage; a time-discounted view favors front-loading; the spend-down
-  glidepath flags a ballooning terminal balance as a reason to spend/give more.
-- **Net Worth vs Net Means:** accounting figure (excl. DAF) and life-value
-  figure (incl. directed DAF). Label mapping is `net_means_mapping` in profile.
-
-**Assumptions** all live in `profile.json`; the §2b interview fills it.
-Defaults are correct unattended (transfers excluded, SWR horizon-derived). Full
-methodology + the complete profile schema: `references/reports.md`. State the
-key assumptions whenever you present numbers — this user is FIRE/Boglehead
-literate; lead with the number and the non-obvious caveat.
 
 ## 5. Correcting tax buckets
 

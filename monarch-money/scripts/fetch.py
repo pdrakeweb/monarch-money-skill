@@ -755,44 +755,16 @@ def dispatch(args, cache, client):
         render_status(cache)
     elif cmd == "version":
         print(f"monarch-money skill version {SKILL_VERSION}")
-    elif cmd == "profile":
-        import reports as _reports
-        ddir = os.path.dirname(os.path.abspath(args.db))
-        ppath = os.path.join(ddir, "profile.json")
-        prof = _reports.load_profile(ddir)
-        print("## Profile\n")
-        print(f"Path: {ppath}")
-        print(f"Exists: {os.path.exists(ppath)}")
-        print(f"profile_complete: {prof.get('profile_complete')}")
-        if not prof.get("profile_complete"):
-            print("\n⚠ Interview not done. Run the §2b first-run interview: "
-                  "pre-fill from context/cache/memory, set research-grounded "
-                  "defaults, ask only genuine gaps, then write profile.json "
-                  "with profile_complete: true.")
-        swr, src = _reports.derive_swr(prof)
-        print(f"\nActive SWR: {swr:.2f}% ({src})")
-    elif cmd in ("report", "dashboard", "reports"):
-        import reports as _reports
-        profile = _reports.load_profile(os.path.dirname(os.path.abspath(args.db)))
-        if cmd == "reports":
-            print("## Available reports\n")
-            for k in _reports.REPORT_KEYS:
-                print(f"- `{k}`")
-            print("\n`python scripts/fetch.py report <key>` (or `report all`), "
-                  "`python scripts/fetch.py dashboard`.")
-        elif cmd == "dashboard":
-            print(_reports.render_dashboard(cache, profile))
-        else:  # report
-            key = args.key
-            if key == "all":
-                print(_reports.render_all(cache, profile))
-            elif key in _reports.REPORT_KEYS:
-                print(_reports.render_full(cache, profile, key))
-            else:
-                print(json.dumps({"error": "UnknownReport",
-                      "message": f"'{key}' is not a report. Options: "
-                      + ", ".join(_reports.REPORT_KEYS) + ", all"}))
-                return 1
+    elif cmd in ("report", "dashboard", "reports", "profile"):
+        # Moved out in v1.0.0 (the three-skill split). monarch-money is the
+        # data layer only — it syncs Monarch into the cache.
+        print(f"`{cmd}` moved out of monarch-money in v1.0.0.\n"
+              "- Reports & dashboard (net worth, spending, allocation, TLH): "
+              "the **personal-finance** skill.\n"
+              "- Retirement projections (FIRE, drawdown, TPAW, Social "
+              "Security, retire-age what-ifs): the **retirement** skill.\n"
+              "Both read this skill's cache. monarch-money handles sync/auth "
+              "only — see `python scripts/fetch.py --help`.")
     elif cmd == "auth-status":
         render_auth_status(args.session_path, args.cred_path, args.cookie_path)
     elif cmd == "clear-cache":
@@ -884,8 +856,9 @@ def build_parser():
                     help="Also wipe user-corrected tax buckets "
                          "(auto_classified=0). Default keeps them.")
     sub.add_parser("version", parents=[common])
+    # Moved out in v1.0.0 — kept as stubs that redirect to the consumer skills.
     rp = sub.add_parser("report", parents=[common])
-    rp.add_argument("key", help="report key (or 'all'); see `reports`")
+    rp.add_argument("key", nargs="?", help="(moved to personal-finance/retirement)")
     sub.add_parser("dashboard", parents=[common])
     sub.add_parser("reports", parents=[common])
     sub.add_parser("profile", parents=[common])
