@@ -44,6 +44,39 @@ if ($skillName -ne $skillDir) {
     Write-Error "SKILL.md name '$skillName' does not match folder '$skillDir'"
     exit 1
 }
+# Anthropic skill-name rules: <=64 chars, lowercase/digits/hyphens only, and
+# no reserved words. Catch violations at build time, not at upload-rejection.
+if ($skillName.Length -gt 64) { Write-Error "Skill name exceeds 64 chars."; exit 1 }
+if ($skillName -cnotmatch '^[a-z0-9-]+$') {
+    Write-Error "Skill name '$skillName' must be lowercase letters, digits, hyphens only."
+    exit 1
+}
+if ($skillName -match '(?i)\b(claude|anthropic)\b') {
+    Write-Error "Skill name '$skillName' uses a reserved word (claude/anthropic)."
+    exit 1
+}
+# description must be present and <=1024 chars.
+$descMatch = Select-String -Path "$skillDir\SKILL.md" -Pattern '^description:\s*(.*)$'
+$descRest = ""
+if ($descMatch) {
+    # Folded scalar: gather indented continuation lines for the length check.
+    $fmLines = (Get-Content "$skillDir\SKILL.md")
+    $inDesc = $false
+    foreach ($l in $fmLines) {
+        if ($l -match '^description:\s*(.*)$') { $inDesc = $true; $descRest += $Matches[1]; continue }
+        if ($inDesc) {
+            if ($l -match '^\s+\S') { $descRest += " " + $l.Trim() } else { break }
+        }
+    }
+}
+if ([string]::IsNullOrWhiteSpace($descRest.Replace('>', '').Trim())) {
+    Write-Error "SKILL.md frontmatter description is empty."
+    exit 1
+}
+if ($descRest.Length -gt 1024) {
+    Write-Error "SKILL.md description exceeds 1024 chars ($($descRest.Length))."
+    exit 1
+}
 
 # --- validate frontmatter version matches SKILL_VERSION constant -------------
 $mdVerMatch = Select-String -Path "$skillDir\SKILL.md" -Pattern '^version:\s+"?([0-9]+\.[0-9]+\.[0-9]+)"?'

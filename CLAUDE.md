@@ -12,15 +12,25 @@ After editing ANY file in `monarch-money\`, run:
 
 Then **restart Claude Desktop** (unless you passed `-RestartClaude`).
 
-`deploy.ps1` does NOT refresh the running skill automatically — the deployed copy
-is a separate artifact. Edit source → `deploy.ps1` → restart Claude Desktop.
-Skip this and you are testing stale code.
+`deploy.ps1` auto-detects the nested `<guid>\<guid>\skills\monarch-money\`
+layout, backs up the previous deployment (last 5 in `.backups\`; skip with
+`-SkipBackup`), mirrors with robocopy /MIR **excluding `data\`** (session
+pickle / cache / credentials survive), and syncs `manifest.json`.
 
-Deploy details: it auto-detects the nested `<guid>\<guid>\skills\monarch-money\`
-layout under `%APPDATA%\Claude\local-agent-mode-sessions\skills-plugin`, backs up
-the previous deployment (last 5 kept in `.backups\`; skip with `-SkipBackup`),
-and mirrors with robocopy /MIR — **excluding `data\`**, so the deployed session
-pickle / cache / credentials survive every redeploy.
+### ⚠ The three-location model (READ before debugging "wrong version")
+
+monarch-money was **uploaded via claude.ai Settings**, so it has a server
+`skillId` (`skill_019…`) and is **account-synced**: web, mobile, AND desktop
+all load the **SERVER copy**. Editing local files / running `deploy.ps1` does
+NOT change what loads, and there is no API to update account skills
+(`/v1/skills` is workspace-scoped, invisible in the UI). `deploy.ps1` reports
+`Server-synced: YES` and prints the zip to upload.
+
+**To update the running skill on all devices:** Settings → Capabilities →
+Skills → remove the old `monarch-money` → Upload a skill → pick
+`monarch-money.zip` (built by `deploy.ps1`/`build.ps1`) → restart. That one
+upload updates desktop + web + phone. Always confirm with
+`python scripts/fetch.py version` (live value; never trust cached frontmatter).
 
 ## Repo layout
 

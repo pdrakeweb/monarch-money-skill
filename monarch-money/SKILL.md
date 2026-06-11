@@ -1,6 +1,6 @@
 ---
 name: "monarch-money"
-version: "0.5.0"
+version: "0.5.1"
 description: >
   Access and analyze the user's Monarch Money financial data: accounts, balances,
   net worth, investment holdings, transactions, budgets, and cashflow. Use this
@@ -163,9 +163,15 @@ integration or another tool.
 | `clear-cache` | Empty the local cache; next sync re-pulls and re-infers tax buckets | `--include-user-buckets` |
 | `version` | Print the installed skill version | — |
 
-If the user asks **which version of the skill is installed**, run
-`python scripts/fetch.py version` and report the output (it must match the
-`version:` in this file's frontmatter — a mismatch means a broken deploy).
+If the user asks **which version of the skill is installed**, you MUST run
+`python scripts/fetch.py version` and report THAT output — never answer from
+this file's frontmatter or from memory (a stale session can hold an old
+frontmatter in context). If the version looks older than expected after a
+deploy: this skill is **account/server-synced** (it was uploaded via
+Settings), so editing local files or running `deploy.ps1` does NOT change what
+loads on web/mobile/desktop — the user must re-upload `monarch-money.zip` via
+**Settings → Capabilities → Skills** (there is no API for it). Tell them that
+plainly rather than re-deploying.
 
 Global: `--refresh` bypasses TTL. (`--mock` exists for development against the
 repo's `tests/fixtures/` — those fixtures are not packaged in the deployed
