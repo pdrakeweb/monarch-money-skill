@@ -1,6 +1,6 @@
 ---
 name: "monarch-money"
-version: "0.7.0"
+version: "0.8.0"
 description: >
   Access and analyze the user's Monarch Money financial data: accounts, balances,
   net worth, investment holdings, transactions, budgets, and cashflow. Use this
@@ -19,6 +19,53 @@ ask the scripts to dump raw rows.
 
 All commands run from the skill directory:
 `python scripts/fetch.py <command> [flags]`
+
+## Dual-Mode Operation
+
+This skill works in two modes. Claude detects which to use automatically.
+
+### MCP Mode (preferred when available)
+If a Monarch Money MCP server is connected, Claude:
+1. Calls MCP tools directly for live data
+2. Pipes JSON output through `scripts/cache_writer.py` to populate SQLite
+3. Queries SQLite for analysis
+
+Detection: attempt `check_auth_status` (robcerda MCP) or `get_accounts`. If
+either succeeds, MCP mode is active. If both fail with "tool not found", fall
+back to Direct Mode.
+
+MCP tool → cache_writer.py mapping:
+| Data | MCP tool | cache_writer table |
+|------|----------|--------------------|
+| Accounts | `get_accounts` | `--table accounts` |
+| Holdings | `get_account_holdings --account_id ID` | `--table holdings --account-id ID` |
+| Transactions | `get_transactions --start_date X --end_date Y` | `--table transactions` |
+| Budgets | `get_budgets --start_date X --end_date Y` | `--table budgets --period YYYY-MM` |
+| Cashflow | `get_cashflow --start_date X --end_date Y` | `--table cashflow --period YYYY-MM` |
+| Recurring | `get_recurring_transactions` | `--table recurring` |
+| Net worth history | `get_net_worth --start_date X --end_date Y` | `--table net-worth-history` |
+| Account balance history | `get_account_balance_history --account_id ID` | `--table account-balance-history --account-id ID` |
+
+**Write to cache:** `<mcp_json_output> | python scripts/cache_writer.py --table TABLE [options]`
+Or: `python scripts/cache_writer.py --table TABLE --input <(echo 'JSON_STRING')`
+
+On Windows PowerShell (likely): write MCP output to a temp file, then:
+`python scripts/cache_writer.py --table accounts --input $env:TEMP\mm_accounts.json`
+
+cache_writer.py normalizes camelCase MCP fields to the cache's snake_case
+schema, runs the SAME tax-bucket classification and idempotent inserts as
+Direct Mode, and prints a one-line summary (e.g. `Cached 8 accounts. Net
+worth: $X. Tax bucket warnings: 0.`). Missing fields degrade to NULL and
+unknown fields are dropped, so it tolerates MCP-implementation differences. On
+failure it prints `{"error","message"}` JSON and exits 1, like fetch.py. After
+writing, **query `monarch_cache.db` directly for analysis** — exactly as in
+Direct Mode. MCP mode also shares the session pickle an MCP server saved
+(`.mm/mm_session.pickle`), so the skill usually needs no separate auth when an
+MCP is connected.
+
+### Direct Mode (fallback)
+When no MCP server is connected, use `scripts/fetch.py` as documented below.
+fetch.py handles auth, API calls, caching, and summary output in one step.
 
 ## 0. Where data lives (persists across chat sessions)
 
