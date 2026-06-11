@@ -117,6 +117,16 @@ def test_resolve_data_dir_prefers_persistent_home(monkeypatch, tmp_path):
     assert got == os.path.join(fake_home, ".claude-skills", "test-skill")
 
 
+def test_data_dir_persistence_classifier(tmp_path, monkeypatch):
+    from skill_common import data_dir_persistence
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    home = str(tmp_path / ".claude-skills" / "x")
+    assert data_dir_persistence(home)[0] == "home"
+    assert data_dir_persistence("/mnt/user-data/.claude-skills/x")[0] == "cloud"
+    assert data_dir_persistence("/some/skill/data")[0] == "skill"
+
+
 def test_bootstrap_data_copies_once_never_overwrites(tmp_path):
     from skill_common import bootstrap_data
     skill_dir = tmp_path / "skill"

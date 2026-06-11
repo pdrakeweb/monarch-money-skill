@@ -134,6 +134,36 @@ def resolve_data_dir(skill_name, skill_dir, env_var=None):
     return tempfile.gettempdir()
 
 
+def data_dir_persistence(path):
+    """Classify how durable a data directory is, so the skill can tell the
+    user whether saved auth/cache will survive. Returns (kind, explanation).
+
+    kind ∈ {home, cloud, temp, skill, unknown}:
+      home  — ~/.claude-skills/<name>: persists across sessions on the machine
+      cloud — /mnt/user-data/...: persists WITHIN a conversation; a new chat
+              starts fresh (per-conversation container)
+      temp  — system temp: ephemeral, lost when the container recycles
+      skill — inside the skill package's data/: WIPED when the skill is
+              replaced / re-synced (the classic 'lost my creds' cause)
+    """
+    p = os.path.abspath(path).replace("\\", "/")
+    home = os.path.abspath(os.path.expanduser("~")).replace("\\", "/")
+    if "/.claude-skills/" in p and p.startswith(home):
+        return ("home", "persists across chat sessions on this machine, and "
+                "survives skill replacement")
+    if "/mnt/user-data/" in p:
+        return ("cloud", "persists within THIS conversation only — a new chat "
+                "gets a fresh container; bundle a .env via build -IncludeAuth "
+                "for cross-chat/cross-device auth")
+    import tempfile
+    if p.startswith(os.path.abspath(tempfile.gettempdir()).replace("\\", "/")):
+        return ("temp", "EPHEMERAL — lost when the container recycles")
+    if "/data" in p and "/scripts" not in p:
+        return ("skill", "INSIDE the skill package — WIPED when the skill is "
+                "replaced/re-synced; auth saved here does not survive an update")
+    return ("unknown", "persistence unknown")
+
+
 def bootstrap_data(data_dir, skill_dir):
     """First-run bootstrap: if the packaged skill ships data/bootstrap/ files
     (opt-in via build -IncludeAuth) and the persistent data dir doesn't have
