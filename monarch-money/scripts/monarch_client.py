@@ -15,6 +15,7 @@ Two public surfaces:
 
 Nothing here ever prints a password, session token, or MFA secret to stdout.
 """
+import datetime as _dt
 import json
 import os
 import re
@@ -31,7 +32,7 @@ from skill_common import (                               # noqa: E402
     SkillError, resolve_data_dir, bootstrap_data, load_dotenv,
 )
 # Per-skill schema + version (skill_schema.py is monarch's, not skeleton's).
-from skill_schema import SKILL_VERSION, SCHEMA, V2_DDL   # noqa: E402,F401
+from skill_schema import SKILL_VERSION, SCHEMA, V2_DDL, V3_DDL   # noqa: E402,F401
 
 
 # --------------------------------------------------------------------------- #
@@ -126,6 +127,29 @@ def infer_tax_bucket(subtype, name=None):
     return "other"
 
 
+# --------------------------------------------------------------------------- #
+# Exclusion period normalisation
+# --------------------------------------------------------------------------- #
+def _expand_period_bound(value, is_end):
+    """Normalise a YYYY-MM period to a full ISO date bound — first day for a
+    start, last day for an end. Full ISO dates and None/'' pass through.
+
+    Exclusions store full ISO dates so the lexical comparisons in
+    get_exclusion_filter_sql stay correct: an end bound of '2024-03' would
+    otherwise be lexically < '2024-03-15' and wrongly exclude nothing."""
+    if not value:
+        return value
+    v = str(value).strip()
+    if len(v) == 7 and v[4] == "-" and v[:4].isdigit() and v[5:7].isdigit():
+        year, month = int(v[:4]), int(v[5:7])
+        if is_end:
+            nxt = (_dt.date(year + 1, 1, 1) if month == 12
+                   else _dt.date(year, month + 1, 1))
+            return (nxt - _dt.timedelta(days=1)).isoformat()
+        return _dt.date(year, month, 1).isoformat()
+    return v
+
+
 class MonarchCache(SkillCache):
     """Monarch's cache: skeleton SkillCache (schema-driven storage, TTL
     freshness, counters, status, schema-driven clear/prune) plus the
@@ -167,9 +191,13 @@ class MonarchCache(SkillCache):
         than relying solely on the union DDL.
 
         prior_version is None for a fresh/in-memory db (nothing to migrate)."""
-        if prior_version is not None and prior_version < 2:
+        if prior_version is None:
+            return
+        if prior_version < 2:
             self._conn.executescript(V2_DDL)
-            self._conn.commit()
+        if prior_version < 3:
+            self._conn.executescript(V3_DDL)
+        self._conn.commit()
 
     # ---- accounts ----------------------------------------------------- #
     def write_accounts(self, rows):
@@ -374,6 +402,105 @@ class MonarchCache(SkillCache):
         counts["tax_buckets"] = counts.get("account_tax_buckets", 0)
         counts["user_buckets_kept"] = counts.get("protected_rows_kept", 0)
         return counts
+
+    # ---- exclusions (v3) ---------------------------------------------- #
+    # User-defined filters for one-time / non-recurring expenses. NOT part of
+    # the cache-lifecycle machinery (see skill_schema V3_DDL) — they survive a
+    # clear-cache, since the API can't regenerate them.
+    _EXCL_COLS = ("id", "type", "value", "start_date", "end_date", "reason",
+                  "exclude_from", "auto_suggested", "created_at")
+
+    def add_exclusion(self, type, value, start_date=None, end_date=None,
+                      reason=None, exclude_from="all", auto_suggested=False):
+        """Idempotent add; returns the rowid (the existing row's id on a
+        duplicate). YYYY-MM bounds are expanded to full ISO dates so the filter
+        SQL compares correctly.
+
+        We dedupe with an explicit NULL-safe check rather than relying on the
+        UNIQUE(type, value, start_date, end_date) constraint, because SQLite
+        treats NULLs as distinct in UNIQUE indexes — so two all-time
+        exclusions (start/end NULL) would otherwise both insert. The constraint
+        stays as a backstop for fully-dated rows."""
+        start_date = _expand_period_bound(start_date, is_end=False)
+        end_date = _expand_period_bound(end_date, is_end=True)
+        # NULL-safe lookup (SQLite `IS` matches NULLs and values alike).
+        existing = self._conn.execute(
+            "SELECT id FROM exclusions "
+            "WHERE type IS ? AND value IS ? AND start_date IS ? AND end_date IS ?",
+            (type, value, start_date, end_date),
+        ).fetchone()
+        if existing:
+            return existing[0]
+        cur = self._conn.execute(
+            "INSERT INTO exclusions "
+            "(type, value, start_date, end_date, reason, exclude_from, "
+            " auto_suggested, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (type, value, start_date, end_date, reason, exclude_from,
+             int(bool(auto_suggested)), int(time.time())),
+        )
+        self._conn.commit()
+        return cur.lastrowid
+
+    def remove_exclusion(self, exclusion_id):
+        """DELETE by id; returns True iff a row existed."""
+        cur = self._conn.execute(
+            "DELETE FROM exclusions WHERE id = ?", (exclusion_id,))
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def list_exclusions(self, type_filter=None):
+        """All exclusions as dicts (newest first), optionally one type only."""
+        q = f"SELECT {', '.join(self._EXCL_COLS)} FROM exclusions"
+        params = ()
+        if type_filter:
+            q += " WHERE type = ?"
+            params = (type_filter,)
+        q += " ORDER BY created_at DESC, id DESC"
+        return [dict(zip(self._EXCL_COLS, r))
+                for r in self._conn.execute(q, params).fetchall()]
+
+    def clear_auto_exclusions(self):
+        """Remove every skill-suggested exclusion (auto_suggested=1). Returns
+        the count removed. User-added exclusions are untouched."""
+        cur = self._conn.execute(
+            "DELETE FROM exclusions WHERE auto_suggested = 1")
+        self._conn.commit()
+        return cur.rowcount
+
+    def get_exclusion_filter_sql(self, scope, tx_table_alias="t"):
+        """Return (sql_fragment, params) to AND into a WHERE clause querying
+        the transactions table aliased as `tx_table_alias`. The fragment drops
+        any transaction matched by an active exclusion whose exclude_from is
+        'all' or equals `scope`.
+
+        Single source of truth — every exclusion-aware caller (fetch.py and the
+        downstream personal-finance / retirement skills) uses this so the
+        filtering logic lives in exactly one place. Four NOT EXISTS clauses,
+        one per exclusion type; each carries the scope param, so scope='all'
+        yields exactly four params.
+
+        NULL start/end mean all-time (COALESCE to open bounds). value/scope are
+        always parameterised; only the developer-controlled table alias is
+        interpolated."""
+        t = tx_table_alias
+        date_lo = f"({t}.date >= COALESCE(x.start_date, '0000-00-00'))"
+        date_hi = f"({t}.date <= COALESCE(x.end_date, '9999-99-99'))"
+        scope_ok = "(x.exclude_from = 'all' OR x.exclude_from = ?)"
+        frag = (
+            f" AND NOT EXISTS (SELECT 1 FROM exclusions x "
+            f"WHERE x.type = 'transaction' AND x.value = {t}.id "
+            f"AND {scope_ok})"
+            f" AND NOT EXISTS (SELECT 1 FROM exclusions x "
+            f"WHERE x.type = 'category' AND x.value = {t}.category "
+            f"AND {date_lo} AND {date_hi} AND {scope_ok})"
+            f" AND NOT EXISTS (SELECT 1 FROM exclusions x "
+            f"WHERE x.type = 'merchant' AND x.value = {t}.merchant "
+            f"AND {date_lo} AND {date_hi} AND {scope_ok})"
+            f" AND NOT EXISTS (SELECT 1 FROM exclusions x "
+            f"WHERE x.type = 'category_period' AND x.value = {t}.category "
+            f"AND {date_lo} AND {date_hi} AND {scope_ok})"
+        )
+        return frag, [scope, scope, scope, scope]
 
 
 # --------------------------------------------------------------------------- #

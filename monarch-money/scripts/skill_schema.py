@@ -6,7 +6,7 @@ diverges from claude-skill-skeleton by design.
 
 # Bump on EVERY commit that changes this skill (see CLAUDE.md). Must match
 # the `version:` in SKILL.md frontmatter — builds refuse on mismatch.
-SKILL_VERSION = "1.0.0"
+SKILL_VERSION = "1.1.0"
 
 TTL_4H = 4 * 3600
 TTL_24H = 24 * 3600
@@ -32,6 +32,30 @@ CREATE TABLE IF NOT EXISTS account_history (
     fetched_at      INTEGER,
     PRIMARY KEY (account_id, date)
 );
+"""
+
+# v3 (schema_version 3) — the exclusions layer. Lets users permanently mark
+# large one-time expenses (orthodontia, surgery, an annual insurance lump,
+# a big home repair) as non-recurring so they drop out of ongoing transaction
+# analysis by default. This is USER CONFIG, not cached API data: it is
+# deliberately kept OUT of SCHEMA["tables"] so the skeleton clear-cache / prune
+# machinery never touches it (a cache clear must not wipe the user's
+# exclusions). Managed only via MonarchCache's explicit add/remove/list methods
+# and manage_exclusions.py. All CREATE ... IF NOT EXISTS — idempotent.
+V3_DDL = """
+CREATE TABLE IF NOT EXISTS exclusions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    type            TEXT NOT NULL,    -- 'transaction'|'category'|'merchant'|'tag'|'category_period'
+    value           TEXT NOT NULL,    -- tx id / category name / merchant name / tag name
+    start_date      TEXT,             -- ISO-8601 date; NULL = all time
+    end_date        TEXT,             -- ISO-8601 date; NULL = all time
+    reason          TEXT,             -- user note, e.g. "one-time orthodontia"
+    exclude_from    TEXT NOT NULL DEFAULT 'all',  -- 'budget'|'cashflow'|'insights'|'all'
+    auto_suggested  INTEGER DEFAULT 0,  -- 1 = skill suggested; 0 = user-added
+    created_at      INTEGER,
+    UNIQUE(type, value, start_date, end_date)
+);
+CREATE INDEX IF NOT EXISTS excl_type ON exclusions(type);
 """
 
 _V1_DDL = """
@@ -121,12 +145,12 @@ CREATE TABLE IF NOT EXISTS recurring (
 """
 
 SCHEMA = {
-    "version": 2,
+    "version": 3,
 
     # Base DDL is the union of every schema version (all IF NOT EXISTS), so a
     # fresh install gets every table in one executescript. _migrate_schema
-    # handles in-place upgrades of pre-existing v1 databases.
-    "ddl": _V1_DDL + V2_DDL,
+    # handles in-place upgrades of pre-existing v1/v2 databases.
+    "ddl": _V1_DDL + V2_DDL + V3_DDL,
 
     # ttl: prune_stale eligibility + default freshness (fetch.py passes its
     # own TTLs at call sites). Historical tables (transactions/budgets/
