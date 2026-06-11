@@ -666,7 +666,8 @@ class Ctx:
         self.days = getattr(args, "days", 30)
 
 
-NO_AUTH = {"net-worth", "status", "auth-status", "clear-cache", "version"}
+NO_AUTH = {"net-worth", "status", "auth-status", "clear-cache", "version",
+           "report", "dashboard", "reports"}
 
 
 def dispatch(args, cache, client):
@@ -702,6 +703,28 @@ def dispatch(args, cache, client):
         render_status(cache)
     elif cmd == "version":
         print(f"monarch-money skill version {SKILL_VERSION}")
+    elif cmd in ("report", "dashboard", "reports"):
+        import reports as _reports
+        profile = _reports.load_profile(os.path.dirname(os.path.abspath(args.db)))
+        if cmd == "reports":
+            print("## Available reports\n")
+            for k in _reports.REPORT_KEYS:
+                print(f"- `{k}`")
+            print("\n`python scripts/fetch.py report <key>` (or `report all`), "
+                  "`python scripts/fetch.py dashboard`.")
+        elif cmd == "dashboard":
+            print(_reports.render_dashboard(cache, profile))
+        else:  # report
+            key = args.key
+            if key == "all":
+                print(_reports.render_all(cache, profile))
+            elif key in _reports.REPORT_KEYS:
+                print(_reports.render_full(cache, profile, key))
+            else:
+                print(json.dumps({"error": "UnknownReport",
+                      "message": f"'{key}' is not a report. Options: "
+                      + ", ".join(_reports.REPORT_KEYS) + ", all"}))
+                return 1
     elif cmd == "auth-status":
         render_auth_status(args.session_path, args.cred_path, args.cookie_path)
     elif cmd == "clear-cache":
@@ -793,6 +816,10 @@ def build_parser():
                     help="Also wipe user-corrected tax buckets "
                          "(auto_classified=0). Default keeps them.")
     sub.add_parser("version", parents=[common])
+    rp = sub.add_parser("report", parents=[common])
+    rp.add_argument("key", help="report key (or 'all'); see `reports`")
+    sub.add_parser("dashboard", parents=[common])
+    sub.add_parser("reports", parents=[common])
     return p
 
 

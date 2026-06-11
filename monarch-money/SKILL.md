@@ -1,6 +1,6 @@
 ---
 name: "monarch-money"
-version: "0.5.1"
+version: "0.6.0"
 description: >
   Access and analyze the user's Monarch Money financial data: accounts, balances,
   net worth, investment holdings, transactions, budgets, and cashflow. Use this
@@ -161,6 +161,9 @@ integration or another tool.
 | `status` | Cache row counts, ages, lifetime API calls | — |
 | `auth-status` | Session age + expiry estimate | — |
 | `clear-cache` | Empty the local cache; next sync re-pulls and re-infers tax buckets | `--include-user-buckets` |
+| `dashboard` | Boglehead/FIRE dashboard: KPI header + all 10 reports in summary with links | — |
+| `report <key>` | One full report (`report all` = every full report in one call) | — |
+| `reports` | List the 10 report keys | — |
 | `version` | Print the installed skill version | — |
 
 If the user asks **which version of the skill is installed**, you MUST run
@@ -216,6 +219,37 @@ ORDER BY unrealized_pl ASC;
 ```
 python scripts/fetch.py cashflow --months 3
 ```
+
+## 4b. Boglehead / FIRE reports & dashboard
+
+The skill ships **10 reports** plus a **comprehensive dashboard**, all computed
+from the cache (no API calls) — geared to a Boglehead/FIRE user. Keys:
+`net-worth`, `allocation`, `asset-location`, `fire-progress`, `withdrawal`,
+`savings-rate`, `expenses`, `emergency-fund`, `tlh`, `concentration`.
+
+- One report: `python scripts/fetch.py report allocation`
+- Every full report at once: `python scripts/fetch.py report all`
+  (sections split on `<!-- report:<key> -->`)
+- The dashboard: `python scripts/fetch.py dashboard` — a KPI header table plus
+  each report in summary form, each with a link to its full report.
+
+**Sync first** (`sync-all`) so the cache has accounts/holdings/transactions/
+cashflow — reports read only cached data.
+
+**Building the dashboard deliverable:** when the user asks for "the dashboard"
+(or a financial overview), run `fetch.py dashboard` AND `fetch.py report all`,
+then render **one self-contained HTML artifact**: a KPI strip on top, then a
+summary card per report, each card linking (in-page accordion/anchor) to the
+embedded full report body. Numbers are already computed — embed them, don't
+recompute. Offer the theme-factory skill for styling. Methodology, the full
+vocabulary (SWR, Coast/Lean/Fat FIRE, asset location, 5/25 bands, wash sale),
+and the tunable assumptions live in `references/reports.md`.
+
+**Assumptions** (SWR, target allocation, age for Coast FIRE, essential
+categories) come from `profile.json` in the data dir; defaults are standard
+FIRE (4%/25×, three-fund). If the user wants Coast FIRE or a custom allocation,
+write/update that file (path = the `Database:` dir from `fetch.py status`).
+State the key assumptions when presenting numbers.
 
 ## 5. Correcting tax buckets
 
