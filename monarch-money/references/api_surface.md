@@ -173,6 +173,83 @@ ORDER BY month DESC, spend DESC;
 
 ---
 
+## Exclusion Management Queries
+
+The `exclusions` table (schema v3) marks one-time / non-recurring expenses so
+they drop out of ongoing analysis. It is USER CONFIG — it survives `clear-cache`
+and is managed via `manage_exclusions.py` (CLI) or `MonarchCache`'s
+add/remove/list methods. **Don't hand-filter transactions** — use
+`cache.get_exclusion_filter_sql(scope)` (the single source of truth, used by
+fetch.py and the downstream skills). The queries below are for inspection.
+
+### E1. List all active exclusions
+```sql
+SELECT id, type, value, start_date, end_date, exclude_from,
+       auto_suggested, reason
+FROM exclusions
+ORDER BY created_at DESC;
+```
+
+### E2. Count excluded transactions in a date range
+```sql
+SELECT COUNT(*) AS excluded_txns
+FROM transactions t
+WHERE t.date BETWEEN '2024-01-01' AND '2024-12-31'
+  AND EXISTS (
+    SELECT 1 FROM exclusions x
+    WHERE (x.exclude_from = 'all' OR x.exclude_from = 'cashflow')
+      AND (
+        (x.type = 'transaction'     AND x.value = t.id) OR
+        (x.type IN ('category','category_period') AND x.value = t.category
+           AND t.date >= COALESCE(x.start_date, '0000-00-00')
+           AND t.date <= COALESCE(x.end_date,   '9999-99-99')) OR
+        (x.type = 'merchant'        AND x.value = t.merchant
+           AND t.date >= COALESCE(x.start_date, '0000-00-00')
+           AND t.date <= COALESCE(x.end_date,   '9999-99-99'))
+      )
+  );
+```
+
+### E3. Sum of excluded outflows for a month (how much was filtered)
+```sql
+SELECT ROUND(SUM(-t.amount), 2) AS excluded_spend
+FROM transactions t
+WHERE strftime('%Y-%m', t.date) = '2024-03'
+  AND t.amount < 0
+  AND EXISTS (
+    SELECT 1 FROM exclusions x
+    WHERE (x.exclude_from = 'all' OR x.exclude_from = 'cashflow')
+      AND ((x.type = 'transaction' AND x.value = t.id)
+        OR (x.type IN ('category','category_period') AND x.value = t.category
+            AND t.date >= COALESCE(x.start_date, '0000-00-00')
+            AND t.date <= COALESCE(x.end_date,   '9999-99-99'))
+        OR (x.type = 'merchant' AND x.value = t.merchant
+            AND t.date >= COALESCE(x.start_date, '0000-00-00')
+            AND t.date <= COALESCE(x.end_date,   '9999-99-99')))
+  );
+```
+
+### E4. Gross vs net expenses for a month (with / without exclusions)
+```sql
+SELECT
+  ROUND(SUM(-t.amount), 2) AS gross_expense,
+  ROUND(SUM(CASE WHEN NOT EXISTS (
+      SELECT 1 FROM exclusions x
+      WHERE (x.exclude_from = 'all' OR x.exclude_from = 'cashflow')
+        AND ((x.type = 'transaction' AND x.value = t.id)
+          OR (x.type IN ('category','category_period') AND x.value = t.category
+              AND t.date >= COALESCE(x.start_date, '0000-00-00')
+              AND t.date <= COALESCE(x.end_date,   '9999-99-99'))
+          OR (x.type = 'merchant' AND x.value = t.merchant
+              AND t.date >= COALESCE(x.start_date, '0000-00-00')
+              AND t.date <= COALESCE(x.end_date,   '9999-99-99')))
+    ) THEN -t.amount ELSE 0 END), 2) AS net_expense
+FROM transactions t
+WHERE strftime('%Y-%m', t.date) = '2024-03' AND t.amount < 0;
+```
+
+---
+
 ## Lot-level limitation (read before any TLH advice)
 
 Monarch exposes **position-level holdings only**: one aggregated row per

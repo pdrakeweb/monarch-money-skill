@@ -184,6 +184,23 @@ Daily per-account balance snapshots from `get_account_balance_history`.
 INSERT OR REPLACE (idempotent). Populated by
 `cache_writer.py --table account-balance-history --account-id ID`.
 
+### exclusions (user config; schema v3)
+id INTEGER PK AUTOINCREMENT, type TEXT (transaction|category|merchant|tag|
+category_period), value TEXT, start_date TEXT (NULL=all time), end_date TEXT,
+reason TEXT, exclude_from TEXT DEFAULT 'all' (budget|cashflow|insights|all),
+auto_suggested INT, created_at INT, UNIQUE(type, value, start_date, end_date)
+
+The non-recurring-expense filter. Deliberately kept OUT of `SCHEMA["tables"]`
+so the skeleton clear-cache / prune machinery never touches it — exclusions are
+user config the API can't regenerate and must survive a cache clear. Managed
+via `MonarchCache.add/remove/list_exclusions` + `manage_exclusions.py`.
+`get_exclusion_filter_sql(scope)` is the single source of truth every
+exclusion-aware caller embeds (NULL-safe dedup in `add_exclusion` because
+SQLite treats NULLs as distinct in UNIQUE indexes). `analysis.suggest_exclusions`
+(pure, no DB) proposes candidates via four heuristics — outlier / sparse /
+keyword / single-large-in-small — which `manage_exclusions.py suggest` prints
+as ready-to-run `add` commands (it never auto-adds).
+
 ### meta
 key TEXT PK, value TEXT
 Keys: last_full_sync, last_tx_sync, schema_version, api_call_count
@@ -191,8 +208,9 @@ Keys: last_full_sync, last_tx_sync, schema_version, api_call_count
 **Schema migrations.** `schema_version` lives in `meta`. The base DDL is the
 union of all versions (`CREATE TABLE IF NOT EXISTS`), so fresh installs get
 every table at once. `MonarchCache._migrate_schema` captures the on-disk
-version before init and, for a pre-v2 database, explicitly (re)creates the v2
-snapshot tables — making the v1→v2 upgrade marker-driven and idempotent.
+version before init and, for a pre-v2 database, (re)creates the v2 snapshot
+tables; for a pre-v3 database it creates the v3 `exclusions` table — making
+each upgrade marker-driven and idempotent.
 
 ## Write Policy Enforcement
 

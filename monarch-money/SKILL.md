@@ -1,6 +1,6 @@
 ---
 name: "monarch-money"
-version: "1.0.0"
+version: "1.1.0"
 description: >
   Connect to and sync the user's Monarch Money account into a local cache:
   authentication/login, accounts and balances, investment holdings,
@@ -249,16 +249,20 @@ integration or another tool.
 |---------|--------------|---------------|
 | `accounts` | Account table + net worth + tax-bucket warnings | `--refresh` |
 | `holdings` | Positions, values, unrealized P/L, top-5 | `--refresh` |
-| `transactions` | Window summary + top merchants | `--days N`, `--account ID`, `--category C` |
-| `budgets` | Budget vs actual; flags overages | `--month YYYY-MM` |
-| `cashflow` | Income / expense / savings rate | `--month`, `--months N` |
+| `transactions` | Window summary + top merchants (excludes non-recurring) | `--days N`, `--account ID`, `--category C`, `--include-excluded` |
+| `budgets` | Budget vs actual; flags overages | `--month YYYY-MM`, `--include-excluded` |
+| `cashflow` | Income / expense / savings rate | `--month`, `--months N`, `--include-excluded` |
 | `recurring` | Subscriptions + monthly run-rate | `--refresh` |
 | `net-worth` | Net worth from cache (no API call) | — |
 | `sync-all` | Run every sync in order | `--refresh` |
 | `status` | Cache row counts, ages, lifetime API calls | — |
 | `auth-status` | Session age + expiry estimate | — |
-| `clear-cache` | Empty the local cache; next sync re-pulls and re-infers tax buckets | `--include-user-buckets` |
+| `clear-cache` | Empty the local cache; next sync re-pulls and re-infers tax buckets (exclusions survive) | `--include-user-buckets` |
 | `version` | Print the installed skill version | — |
+
+Exclusions are managed by a separate offline CLI —
+`python scripts/manage_exclusions.py <list|add|remove|suggest|clear-auto>`
+(see §10).
 
 `dashboard` / `report` / `reports` / `profile` were **removed in v1.0.0** (the
 three-skill split) — they print a redirect to the personal-finance / retirement
@@ -414,5 +418,79 @@ the change to the right layer:
 - **Monarch-specific files** (fix HERE): `scripts/skill_schema.py` (version,
   DDL, TTLs, protected tax-bucket rows), `scripts/monarch_client.py`
   (MonarchCache write methods, tax-bucket inference, auth flows, GuardedMonarch
-  write policy), `scripts/fetch.py`, `scripts/setup_auth.py`, this file, and
+  write policy), `scripts/fetch.py`, `scripts/setup_auth.py`,
+  `scripts/manage_exclusions.py`, `scripts/analysis.py`, this file, and
   `references/`.
+
+## 10. Managing non-recurring expenses (exclusions)
+
+**Why this matters.** Large one-time expenses — orthodontia, a surgery, an
+annual insurance lump sum, a big home repair, a vehicle or boat purchase — skew
+monthly cashflow, savings rate, and category trend analysis. The exclusions
+layer lets the user permanently mark these as non-recurring so they're filtered
+out of ongoing transaction analysis **by default**. Exclusions are user config:
+they persist across syncs and **survive `clear-cache`** (the API can't
+regenerate them).
+
+Managed by an offline CLI that reads the cache only (no auth, no raw data in
+conversation):
+
+```
+python scripts/manage_exclusions.py suggest      # propose candidates (adds nothing)
+python scripts/manage_exclusions.py list         # show active exclusions
+python scripts/manage_exclusions.py add  ...     # add one (see below)
+python scripts/manage_exclusions.py remove --id N
+python scripts/manage_exclusions.py clear-auto   # drop all skill-suggested ones
+```
+
+### Exclusion types & examples
+```
+# A whole month of one category (orthodontia booked under Dental in 2024-03):
+python scripts/manage_exclusions.py add --type category_period \
+    --value "Dental & Medical" --start 2024-03 --end 2024-03 --reason "orthodontia"
+
+# A single transaction (one big home repair), by its Monarch tx id:
+python scripts/manage_exclusions.py add --type transaction \
+    --value txn_abc123 --reason "roof replacement"
+
+# Everything from a merchant, but only for the budget view:
+python scripts/manage_exclusions.py add --type merchant \
+    --value "Premium Insurance Co" --scope budget --reason "annual premium"
+
+# An entire category, all time:
+python scripts/manage_exclusions.py add --type category --value "Reimbursements"
+```
+`--start` / `--end` accept ISO dates or `YYYY-MM` (a month is expanded to its
+full first→last day). Omit both for all-time. Types: `transaction`, `category`,
+`merchant`, `tag`, `category_period`.
+
+### Scope options (`--scope`, default `all`)
+| Scope | Filters out of |
+|-------|----------------|
+| `all` | every analysis (default) |
+| `budget` | budget vs actual only |
+| `cashflow` | cashflow / savings-rate only |
+| `insights` | downstream insight reports only |
+
+An exclusion applies to a query when its scope is `all` **or** equals the
+query's scope. `get_exclusion_filter_sql(scope)` on `MonarchCache` is the single
+source of truth — `fetch.py transactions` and the downstream personal-finance /
+retirement skills all filter through it. Pass `--include-excluded` to any of
+`transactions` / `cashflow` / `budgets` to see the raw, unfiltered view.
+
+> Note: `transactions` filters at the row level (genuine). `cashflow` and
+> `budgets` render Monarch's server-side **aggregates**, which can't be
+> transaction-filtered locally — when exclusions are configured they print a
+> disclosure and you should query the (exclusion-aware) transactions table for
+> adjusted spend.
+
+### Claude's role
+- **Before analyzing spending/cashflow, check `manage_exclusions.py list`** so
+  you know what's already filtered, and mention active exclusions in summaries
+  (the subcommands print a note when exclusions are applied).
+- **After the first transaction sync, run `suggest`** and offer the candidates;
+  never add them yourself.
+- **Confirm before adding** — exclusions persist. State exactly what will be
+  excluded and from which scope, then run the `add` command.
+- **Proactively offer an exclusion** when the user mentions a one-time expense
+  ("we paid for braces in March", "the annual premium hit in January").
