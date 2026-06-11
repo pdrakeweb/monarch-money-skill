@@ -153,6 +153,11 @@ function Sync-SkillManifest {
     $changed = $false
     $action = 'unchanged'
     if ($entry) {
+        # Server-registered? A skillId NOT prefixed skill_local_ means this
+        # skill was uploaded via claude.ai Settings and is account-synced
+        # (web + mobile + desktop all load the SERVER copy). Local file edits
+        # do NOT change what loads — the user must RE-UPLOAD the zip.
+        $script:ServerRegistered = ($entry.skillId -notlike 'skill_local_*')
         if ($Description -and $entry.description -ne $Description) {
             Copy-Item -LiteralPath $manifestPath "$manifestPath.bak" -Force
             $entry.description = $Description
@@ -305,12 +310,14 @@ try {
     $skillName = Get-SkillName -SourceDir $sourceDir
     Write-Info "Skill name: $skillName"
 
+    $script:ServerRegistered = $false
     $targetInfo = Resolve-DeployTarget -SkillName $skillName
     $targetDir = $targetInfo.Path
     $backupPath = Backup-ExistingDeployment -Target $targetDir -SkillName $skillName
     $mirror = Invoke-Mirror -Source $sourceDir -Target $targetDir
     $description = Get-SkillDescription -SourceDir $sourceDir
     $manifestAction = Sync-SkillManifest -TargetDir $targetDir -SkillName $skillName -Description $description
+    $zipPath = Join-Path $script:ProjectRoot "$skillDirName.zip"
     if ($RestartClaude) { Restart-ClaudeDesktop }
 
     $elapsed = (Get-Date) - $script:StartTime
@@ -323,10 +330,23 @@ try {
     Write-Host ("  Files removed  : {0}" -f $mirror.Removed)
     Write-Host ("  Manifest       : {0}" -f $manifestAction)
     Write-Host ("  Backup         : {0}" -f $(if ($backupPath) { $backupPath } else { '(none)' }))
+    Write-Host ("  Server-synced  : {0}" -f $(if ($script:ServerRegistered) { 'YES — re-upload required (see below)' } else { 'no (local-only)' }))
     Write-Host ("  Elapsed        : {0:N1}s" -f $elapsed.TotalSeconds)
     Write-Host ""
-    if ($DryRun) { Write-Host "Dry run complete." -ForegroundColor Yellow }
-    else { Write-Host "Deploy complete. Restart Claude Desktop to pick up changes." -ForegroundColor Green }
+    if ($DryRun) {
+        Write-Host "Dry run complete." -ForegroundColor Yellow
+    } elseif ($script:ServerRegistered) {
+        Write-Host "⚠  THIS SKILL IS ACCOUNT/SERVER-SYNCED — local files are NOT what loads." -ForegroundColor Yellow
+        Write-Host "   It was uploaded via claude.ai Settings, so web + mobile + desktop all" -ForegroundColor Yellow
+        Write-Host "   load the SERVER copy. There is NO API to update it; you must re-upload:" -ForegroundColor Yellow
+        Write-Host "     1. claude.ai (or Desktop) → Settings → Capabilities → Skills" -ForegroundColor Yellow
+        Write-Host "     2. Remove the old '$skillName', then Upload a skill:" -ForegroundColor Yellow
+        Write-Host "        $zipPath" -ForegroundColor Cyan
+        Write-Host "   This updates ALL your devices (including phone). Restart afterward." -ForegroundColor Yellow
+    } else {
+        Write-Host "Deploy complete. Restart Claude Desktop to pick up changes." -ForegroundColor Green
+        Write-Host "(For web/mobile access, upload $skillDirName.zip via Settings → Capabilities → Skills.)" -ForegroundColor Gray
+    }
 }
 catch {
     Write-Host ""

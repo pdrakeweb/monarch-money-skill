@@ -16,13 +16,36 @@ stale code. Deploy mirrors with robocopy /MIR **excluding `data\`**, so the
 deployed cache/sessions/credentials survive every redeploy.
 
 Claude Desktop only loads skills listed in `manifest.json` next to the
-`skills\` directory — copying files alone is invisible (learned the hard way:
-a first deploy "succeeded" but the skill never appeared). `deploy.ps1` syncs
-the manifest: registers the skill when missing (`Manifest : registered` in
-the summary) and updates the entry's description when SKILL.md's changes.
-If a locally-registered (`skill_local_*`) entry ever disappears after a
-Claude Desktop server sync, do a one-time upload via Settings → Capabilities
-→ Skills — after that, file mirroring keeps it updated.
+`skills\` directory — copying files alone is invisible. `deploy.ps1` syncs
+the manifest: registers the skill when missing and updates its description.
+
+### The three-location model (READ THIS before debugging "wrong version")
+
+A custom skill can exist in three independent, non-syncing places:
+1. **Account/server copy** — uploaded via claude.ai Settings → Capabilities →
+   Skills. Used by **web, mobile, AND the desktop app**. Gets a server
+   `skillId` like `skill_019…`.
+2. **Local files** — what `deploy.ps1` writes (manifest id `skill_local_*`).
+3. **The git repo** — the master; Claude never reads it directly.
+
+**If a skill was ever uploaded via Settings, the SERVER copy is authoritative
+everywhere** — local file edits and `deploy.ps1` do NOT change what loads.
+There is no public API to update account skills (`/v1/skills` is workspace-
+scoped for the Messages API only, invisible in the UI). To update a
+server-synced skill you MUST re-upload the zip via Settings; that's also the
+only way to reach web/mobile. `deploy.ps1` detects this (`Server-synced: YES`)
+and prints the zip path to upload.
+
+**Decision:**
+- Want it on **phone/web** → it must be server-synced → update by re-uploading
+  the zip. `deploy.ps1` still builds + validates that zip and keeps local
+  files current for Claude Code / Cowork.
+- **Desktop-only, fast iteration** → keep it local-only (`skill_local_*`),
+  never upload it via Settings, and `deploy.ps1` + restart is the full loop.
+
+Reporting the version: always run `cli.py version` (the live value). A session
+can hold a stale SKILL.md frontmatter in context, so never trust frontmatter
+for "what's installed".
 
 ## Versioning — bump on EVERY commit that touches the skill directory
 

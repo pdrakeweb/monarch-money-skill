@@ -85,6 +85,24 @@ A `.env` in the persistent data dir is the zero-touch desktop pattern: each
 new session reads it (e.g. credentials or a cookie string) and re-auths
 without asking.
 
+## Deploying & updating (the three-location model)
+
+A custom skill can live in three places that **do not auto-sync**: the
+account/server copy (claude.ai web + mobile + desktop), local files on each
+machine, and the git repo. Consequences:
+
+- **Server-synced skills** (uploaded via Settings → Capabilities → Skills, id
+  `skill_019…`) load the **server copy everywhere**. Local edits / `deploy.ps1`
+  don't change what runs, and there's **no API** to update them — you re-upload
+  the zip via Settings. That single upload updates web, mobile, and desktop.
+- **Local-only skills** (id `skill_local_*`, registered by `deploy.ps1`) load
+  from local files on that machine — fast edit→deploy→restart, but desktop-only.
+
+`deploy.ps1` reports `Server-synced: YES/no` and, when YES, prints the exact
+zip to upload. Use local-only for iteration; upload the built zip when you want
+web/mobile or a "real" release. Always check the running version with
+`cli.py version` — a session can hold a stale SKILL.md frontmatter in context.
+
 ## Patterns to follow (learned the hard way)
 
 - **Markdown summaries out, SQL in.** Scripts print compact summaries;
