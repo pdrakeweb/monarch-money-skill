@@ -325,7 +325,9 @@ def test_schema_migration_v1_to_v2(tmp_path):
             "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         assert "net_worth_history" in tables_after
         assert "account_history" in tables_after
-        assert c.get_meta("schema_version") == "2"
+        # v3 migration also runs on a v1 db (exclusions layer).
+        assert "exclusions" in tables_after
+        assert c.get_meta("schema_version") == "3"
         # And the upgraded db is usable.
         c.write_net_worth_history([{"date": "2026-06-01", "total": 1.0}])
         assert c._conn.execute(
