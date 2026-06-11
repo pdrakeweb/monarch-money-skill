@@ -91,7 +91,7 @@ def test_holdings_output_structure(capsys, db):
 def test_transactions_output_summary(capsys, db):
     code, out = _run(capsys, ["transactions", *_base(db)])
     assert code == 0
-    assert "90 transactions" in out
+    assert "99 transactions" in out
     assert "Net:" in out
 
 
@@ -236,4 +236,4 @@ def test_sync_all(capsys, db):
     c.close()
     assert st["accounts_rows"] == 8
     assert st["holdings_rows"] == 12
-    assert st["transactions_rows"] == 90
+    assert st["transactions_rows"] == 99

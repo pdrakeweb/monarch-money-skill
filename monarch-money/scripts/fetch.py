@@ -680,7 +680,7 @@ class Ctx:
 
 
 NO_AUTH = {"net-worth", "status", "auth-status", "clear-cache", "version",
-           "report", "dashboard", "reports"}
+           "report", "dashboard", "reports", "profile"}
 
 
 def dispatch(args, cache, client):
@@ -716,6 +716,22 @@ def dispatch(args, cache, client):
         render_status(cache)
     elif cmd == "version":
         print(f"monarch-money skill version {SKILL_VERSION}")
+    elif cmd == "profile":
+        import reports as _reports
+        ddir = os.path.dirname(os.path.abspath(args.db))
+        ppath = os.path.join(ddir, "profile.json")
+        prof = _reports.load_profile(ddir)
+        print("## Profile\n")
+        print(f"Path: {ppath}")
+        print(f"Exists: {os.path.exists(ppath)}")
+        print(f"profile_complete: {prof.get('profile_complete')}")
+        if not prof.get("profile_complete"):
+            print("\n⚠ Interview not done. Run the §2b first-run interview: "
+                  "pre-fill from context/cache/memory, set research-grounded "
+                  "defaults, ask only genuine gaps, then write profile.json "
+                  "with profile_complete: true.")
+        swr, src = _reports.derive_swr(prof)
+        print(f"\nActive SWR: {swr:.2f}% ({src})")
     elif cmd in ("report", "dashboard", "reports"):
         import reports as _reports
         profile = _reports.load_profile(os.path.dirname(os.path.abspath(args.db)))
@@ -833,6 +849,7 @@ def build_parser():
     rp.add_argument("key", help="report key (or 'all'); see `reports`")
     sub.add_parser("dashboard", parents=[common])
     sub.add_parser("reports", parents=[common])
+    sub.add_parser("profile", parents=[common])
     return p
 
 

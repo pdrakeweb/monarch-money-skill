@@ -1,6 +1,6 @@
 ---
 name: "monarch-money"
-version: "0.6.1"
+version: "0.7.0"
 description: >
   Access and analyze the user's Monarch Money financial data: accounts, balances,
   net worth, investment holdings, transactions, budgets, and cashflow. Use this
@@ -173,9 +173,10 @@ integration or another tool.
 | `status` | Cache row counts, ages, lifetime API calls | — |
 | `auth-status` | Session age + expiry estimate | — |
 | `clear-cache` | Empty the local cache; next sync re-pulls and re-infers tax buckets | `--include-user-buckets` |
-| `dashboard` | Boglehead/FIRE dashboard: KPI header + all 10 reports in summary with links | — |
+| `dashboard` | Boglehead/FIRE dashboard: KPI header + all 11 reports in summary with links | — |
 | `report <key>` | One full report (`report all` = every full report in one call) | — |
-| `reports` | List the 10 report keys | — |
+| `reports` | List the 11 report keys | — |
+| `profile` | Profile path + completeness + active SWR | — |
 | `version` | Print the installed skill version | — |
 
 If the user asks **which version of the skill is installed**, you MUST run
@@ -232,36 +233,86 @@ ORDER BY unrealized_pl ASC;
 python scripts/fetch.py cashflow --months 3
 ```
 
+## 2b. First-run profile interview (do this before the first dashboard)
+
+The reports depend on `profile.json` (in the data dir; `fetch.py profile` shows
+status). When it's missing or has `"profile_complete": false`, **run an intake
+interview before computing** — you conduct it, it is not a code loop. Order:
+
+1. **Pre-fill from context FIRST — do NOT ask for what you already know.**
+   Populate every field you can from this conversation, memory, and the cached
+   data before asking anything. Examples that must be inferred, not asked:
+   tax-bucket balances → Roth/trad/taxable shares; holdings → risk posture and
+   sector tilts; mortgage transactions → payoff interaction; observed
+   allocation → risk tolerance confirmation. Asking for a known fact is a
+   failure.
+2. **Research-fill defaults** for anything not in context (SWR from horizon,
+   healthcare bridge from typical ACA costs, effective retirement tax rates),
+   and mark them as assumptions.
+3. **Ask ONLY the genuine gaps, batched, with pick-lists** (the surface has a
+   tappable multi-select — use it; don't make the user free-type a choosable
+   value). Question bank (ask only what context can't answer):
+   - birth year / current age; target retirement age; life-expectancy planning
+     age (default 95).
+   - anticipated expense changes at 1y/5y/10y (pick-list: new vehicle,
+     boat/upgrade, remodel, move/new mortgage, child costs start/end,
+     healthcare change, eldercare, none) + amount + horizon → routes to
+     `anticipated_changes` (`one_time` or `lumpy`).
+   - risk tolerance (conservative/moderate/aggressive/very aggressive) —
+     confirm against observed allocation rather than asking blind.
+   - risk capacity (years to retirement, income stability, % of NW
+     discretionary).
+   - sector/factor views 1y/5y/10y (pick-list: AI/semis, broad tech,
+     healthcare/biotech, energy, financials, industrials, intl developed, EM,
+     small-cap value, broad/no-tilt) + over/underweight → `sector_views`.
+   - retirement relocation to a no-income-tax state? → tax model.
+   - charitable intent + DAF in use/planned → Net Means treatment.
+   - legacy intent: spend-down (die-with-zero) vs leave-estate.
+   - mortgage payoff intent (early vs term) → `mortgage_payoff_age`.
+4. **Write `profile.json`** (in the data dir) with the answers +
+   `"profile_complete": true`, then compute and render.
+
+The dashboard prints a "Profile incomplete" banner until this is done.
+
 ## 4b. Boglehead / FIRE reports & dashboard
 
-The skill ships **10 reports** plus a **comprehensive dashboard**, all computed
-from the cache (no API calls) — geared to a Boglehead/FIRE user. Keys:
-`net-worth`, `allocation`, `asset-location`, `fire-progress`, `withdrawal`,
-`savings-rate`, `expenses`, `emergency-fund`, `tlh`, `concentration`.
+The skill ships **11 reports** plus a **comprehensive dashboard**, all computed
+from the cache (no API calls). Keys: `net-worth`, `allocation`,
+`asset-location`, `fire-progress`, `withdrawal`, `savings-rate`, `expenses`,
+`emergency-fund`, `tlh`, `concentration`, `life-value`.
 
-- One report: `python scripts/fetch.py report allocation`
+- One report: `python scripts/fetch.py report fire-progress`
 - Every full report at once: `python scripts/fetch.py report all`
-  (sections split on `<!-- report:<key> -->`)
-- The dashboard: `python scripts/fetch.py dashboard` — a KPI header table plus
-  each report in summary form, each with a link to its full report.
+- The dashboard: `python scripts/fetch.py dashboard`
 
-**Sync first** (`sync-all`) so the cache has accounts/holdings/transactions/
-cashflow — reports read only cached data.
+**Sync first** (`sync-all`). **Run the §2b interview** if the profile is
+incomplete. Then build the deliverable: run `fetch.py dashboard` AND
+`fetch.py report all`, and render **one self-contained HTML artifact** — KPI
+strip + a summary card per report, each linking (accordion/anchor) to the
+embedded full body. Numbers are precomputed — embed them. Offer theme-factory
+for styling.
 
-**Building the dashboard deliverable:** when the user asks for "the dashboard"
-(or a financial overview), run `fetch.py dashboard` AND `fetch.py report all`,
-then render **one self-contained HTML artifact**: a KPI strip on top, then a
-summary card per report, each card linking (in-page accordion/anchor) to the
-embedded full report body. Numbers are already computed — embed them, don't
-recompute. Offer the theme-factory skill for styling. Methodology, the full
-vocabulary (SWR, Coast/Lean/Fat FIRE, asset location, 5/25 bands, wash sale),
-and the tunable assumptions live in `references/reports.md`.
+**What the math now does correctly (don't undo this):**
+- **Outflows are classified.** Investment buys, 401k/IRA/HSA contributions, and
+  debt principal are `transfer` (savings, NOT expenses); a boat/remodel is
+  `one_time` (excluded from the run-rate, shown separately); car/roof/HVAC are
+  `lumpy` (amortized sinking-fund allowances). Only `recurring` is the budget.
+- **FIRE number is built on the projected RETIREMENT budget**, grossed up for
+  the trad/LTCG-taxed share of withdrawals, ÷ a **horizon-derived SWR** (not a
+  flat 4%). State the SWR source and tax assumptions when presenting.
+- **Savings rate is positive and sane** — consumption-based, with capital
+  deployed shown separately; one-time-distorted months flagged.
+- **Life-value framing:** experiential/charitable spend is the point, not
+  leakage; a time-discounted view favors front-loading; the spend-down
+  glidepath flags a ballooning terminal balance as a reason to spend/give more.
+- **Net Worth vs Net Means:** accounting figure (excl. DAF) and life-value
+  figure (incl. directed DAF). Label mapping is `net_means_mapping` in profile.
 
-**Assumptions** (SWR, target allocation, age for Coast FIRE, essential
-categories) come from `profile.json` in the data dir; defaults are standard
-FIRE (4%/25×, three-fund). If the user wants Coast FIRE or a custom allocation,
-write/update that file (path = the `Database:` dir from `fetch.py status`).
-State the key assumptions when presenting numbers.
+**Assumptions** all live in `profile.json`; the §2b interview fills it.
+Defaults are correct unattended (transfers excluded, SWR horizon-derived). Full
+methodology + the complete profile schema: `references/reports.md`. State the
+key assumptions whenever you present numbers — this user is FIRE/Boglehead
+literate; lead with the number and the non-obvious caveat.
 
 ## 5. Correcting tax buckets
 
