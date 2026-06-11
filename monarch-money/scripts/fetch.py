@@ -490,47 +490,86 @@ def render_holdings(cache):
         print(f"Note: {no_basis} position(s) have no cost basis data from Monarch.")
 
 
-def render_transactions(cache, days, account, category, mock):
+def render_transactions(cache, days, account, category, mock,
+                        include_excluded=False):
     cutoff = "1900-01-01" if mock else (
         (_today() - _dt.timedelta(days=days)).isoformat())
-    q = ("SELECT date, amount, merchant, category FROM transactions "
-         "WHERE date >= ?")
+    # Alias the table `t` so the exclusion filter fragment can reference its
+    # columns (t.id / t.category / t.merchant / t.date).
+    base = "FROM transactions t WHERE t.date >= ?"
     params = [cutoff]
     if account:
-        q += " AND account_id = ?"
+        base += " AND t.account_id = ?"
         params.append(account)
     if category:
-        q += " AND category = ?"
+        base += " AND t.category = ?"
         params.append(category)
-    q += " ORDER BY date"
-    rows = cache._conn.execute(q, params).fetchall()
+
+    # Exclusions: scope 'all' for the raw transaction view. Count how many rows
+    # the filter removes so the summary can disclose it. --include-excluded
+    # bypasses filtering entirely (raw view).
+    excl_frag, excl_params, n_excluded = "", [], 0
+    if not include_excluded:
+        frag, fparams = cache.get_exclusion_filter_sql("all", "t")
+        total = cache._conn.execute(
+            f"SELECT COUNT(*) {base}", params).fetchone()[0]
+        kept = cache._conn.execute(
+            f"SELECT COUNT(*) {base}{frag}", params + fparams).fetchone()[0]
+        n_excluded = total - kept
+        excl_frag, excl_params = frag, fparams
+
+    q = (f"SELECT t.date, t.amount, t.merchant, t.category {base}{excl_frag} "
+         f"ORDER BY t.date")
+    rows = cache._conn.execute(q, params + excl_params).fetchall()
     age = cache._conn.execute("SELECT MAX(fetched_at) FROM transactions").fetchone()[0]
     print(f"## Transactions — last {days} days (synced {age_phrase(age)}, "
           f"{len(rows)} transactions)\n")
     if not rows:
         print("No transactions in window.")
-        return
-    dates = [r[0] for r in rows]
-    inflow = sum(r[1] for r in rows if r[1] and r[1] > 0)
-    outflow = sum(r[1] for r in rows if r[1] and r[1] < 0)
-    print(f"Date range: {min(dates)} to {max(dates)}")
-    print(f"Total inflow: {money(inflow)} | Total outflow: {money(outflow)} "
-          f"| Net: {money(inflow + outflow)}\n")
-    # Top merchants by spend
-    spend = {}
-    counts = {}
-    for _, amt, merch, _ in rows:
-        if amt and amt < 0:
-            spend[merch] = spend.get(merch, 0) + abs(amt)
-            counts[merch] = counts.get(merch, 0) + 1
-    top = sorted(spend.items(), key=lambda kv: kv[1], reverse=True)[:5]
-    if top:
-        print("Top merchants by spend:")
-        for i, (merch, amt) in enumerate(top, 1):
-            print(f"{i}. {merch} — {money(amt)} ({counts[merch]} transactions)")
+    else:
+        dates = [r[0] for r in rows]
+        inflow = sum(r[1] for r in rows if r[1] and r[1] > 0)
+        outflow = sum(r[1] for r in rows if r[1] and r[1] < 0)
+        print(f"Date range: {min(dates)} to {max(dates)}")
+        print(f"Total inflow: {money(inflow)} | Total outflow: {money(outflow)} "
+              f"| Net: {money(inflow + outflow)}\n")
+        # Top merchants by spend
+        spend = {}
+        counts = {}
+        for _, amt, merch, _ in rows:
+            if amt and amt < 0:
+                spend[merch] = spend.get(merch, 0) + abs(amt)
+                counts[merch] = counts.get(merch, 0) + 1
+        top = sorted(spend.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        if top:
+            print("Top merchants by spend:")
+            for i, (merch, amt) in enumerate(top, 1):
+                print(f"{i}. {merch} — {money(amt)} ({counts[merch]} transactions)")
+    if n_excluded > 0:
+        print(f"\n*Note: {n_excluded} transaction(s) excluded as non-recurring "
+              f"(see `manage_exclusions.py list`).*")
 
 
-def render_budgets(cache, period):
+def _scope_exclusion_note(cache, scope):
+    """The cashflow/budgets cache tables hold Monarch's server-side aggregates,
+    which can't be transaction-filtered locally. If exclusions are configured
+    for `scope`, return an honest disclosure line (else '')."""
+    try:
+        n = cache._conn.execute(
+            "SELECT COUNT(*) FROM exclusions "
+            "WHERE exclude_from = 'all' OR exclude_from = ?", (scope,)
+        ).fetchone()[0]
+    except Exception:  # noqa: BLE001 — table absent on a pre-v3 db
+        return ""
+    if not n:
+        return ""
+    return (f"\n*Note: {n} exclusion(s) configured for {scope}. These are "
+            f"Monarch's server-side totals and are NOT exclusion-adjusted — "
+            f"query the transactions table (exclusion-aware) for adjusted "
+            f"spend, or run `manage_exclusions.py list`.*")
+
+
+def render_budgets(cache, period, include_excluded=False):
     rows = cache._conn.execute(
         "SELECT category, category_group, budgeted, actual, fetched_at "
         "FROM budgets WHERE period = ? ORDER BY category", (period,)
@@ -551,9 +590,13 @@ def render_budgets(cache, period):
                   f"(↑{money((a or 0) - (b or 0))})")
     else:
         print("All categories within budget.")
+    if not include_excluded:
+        note = _scope_exclusion_note(cache, "budget")
+        if note:
+            print(note)
 
 
-def render_cashflow(cache, months, month=None):
+def render_cashflow(cache, months, month=None, include_excluded=False):
     if month:
         rows = cache._conn.execute(
             "SELECT period, income, expense, savings, savings_rate FROM cashflow "
@@ -585,6 +628,10 @@ def render_cashflow(cache, months, month=None):
             print(f"| {period} | {money(income)} | {money(expense)} | "
                   f"{money(savings)} | {rate:.1f}% |")
         print("\n(Per-month savings rate shown; see SQLite cashflow table for detail.)")
+    if not include_excluded:
+        note = _scope_exclusion_note(cache, "cashflow")
+        if note:
+            print(note)
 
 
 def render_recurring(cache):
@@ -735,15 +782,17 @@ def dispatch(args, cache, client):
         render_holdings(cache)
     elif cmd == "transactions":
         sync_transactions(ctx)
-        render_transactions(cache, ctx.days, args.account, args.category, ctx.mock)
+        render_transactions(cache, ctx.days, args.account, args.category,
+                            ctx.mock, getattr(args, "include_excluded", False))
     elif cmd == "budgets":
         period = args.month or _today().strftime("%Y-%m")
         period, _ = sync_budgets(ctx, period)
-        render_budgets(cache, period)
+        render_budgets(cache, period, getattr(args, "include_excluded", False))
     elif cmd == "cashflow":
         n_months = max(args.months, 1)
         sync_cashflow(ctx, n_months)
-        render_cashflow(cache, n_months, month=args.month)
+        render_cashflow(cache, n_months, month=args.month,
+                        include_excluded=getattr(args, "include_excluded", False))
     elif cmd == "recurring":
         sync_recurring(ctx)
         render_recurring(cache)
@@ -835,17 +884,27 @@ def build_parser():
         description="Monarch Money data fetch + cache CLI.", parents=[common])
     sub = p.add_subparsers(dest="command", required=True)
 
+    # --include-excluded bypasses the non-recurring exclusion filter (raw view)
+    # on every transaction-derived subcommand.
+    def _add_include_excluded(parser):
+        parser.add_argument(
+            "--include-excluded", action="store_true",
+            help="Bypass non-recurring exclusion filtering (show raw data).")
+
     sub.add_parser("accounts", parents=[common])
     sub.add_parser("holdings", parents=[common])
     tx = sub.add_parser("transactions", parents=[common])
     tx.add_argument("--days", type=int, default=30)
     tx.add_argument("--account")
     tx.add_argument("--category")
+    _add_include_excluded(tx)
     bg = sub.add_parser("budgets", parents=[common])
     bg.add_argument("--month")
+    _add_include_excluded(bg)
     cf = sub.add_parser("cashflow", parents=[common])
     cf.add_argument("--month")
     cf.add_argument("--months", type=int, default=1)
+    _add_include_excluded(cf)
     sub.add_parser("recurring", parents=[common])
     sub.add_parser("net-worth", parents=[common])
     sub.add_parser("sync-all", parents=[common])
