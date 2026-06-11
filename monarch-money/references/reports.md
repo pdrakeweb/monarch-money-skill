@@ -37,6 +37,31 @@ category; on merchant only for keywords ≥6 chars, so "buy" doesn't catch
   taxed. Gross up the trad/LTCG-funded share: `gross = budget / (1 − eff_tax)`,
   `eff_tax = trad_share·trad_rate + ltcg_share·ltcg_rate`. Roth/HSA/cash
   withdraw tax-free.
+- **TPAW / ABW** (Ben Mathew's Total Portfolio Allocation and Withdrawal) —
+  amortization-based variable withdrawal on the **total portfolio** (liquid
+  assets + PV of future income streams). Refs: Bogleheads wiki "Total portfolio
+  allocation and withdrawal" + "Amortization based withdrawal formulas",
+  Mathew's thread t=331368.
+  - Horizon `n = life_expectancy_age − retirement_age`.
+  - ABW rate with spending tilt `g`: `r_eff = (1+r)/(1+g) − 1`;
+    `rate = r_eff / (1 − (1+r_eff)^−n)` (limit `1/n` at `r_eff=0`), `r =
+    expected_real_return_pct`. Negative `g` front-loads (declining real
+    spending — die-with-zero); positive `g` back-loads.
+  - Total portfolio = liquid balance + Σ PV(remaining income streams at
+    `income_discount_rate_pct`). Year-1 spending = `rate × total portfolio`.
+  - **Liquidity constraint:** portfolio draw = `min(spending − current-year
+    stream income, balance)` — never borrow against future income (Mathew's
+    flagged TPAW liquidity risk).
+  - ABW **never depletes** (it re-amortizes the remaining balance each year);
+    spending flexes with markets instead. The static-SWR "runs out of money"
+    framing does not apply.
+  - **Monte Carlo bands:** ≥2,000 lognormal-real-return paths (arithmetic mean
+    `μ_a ≈ μ_g + σ²/2`, `σ = equity_vol_pct`), seeded. Accumulate
+    `annual_new_savings` to retirement, then re-amortize each year. Reports
+    spending percentiles (p5/p25/p50/p75/p95) at 5-year ages, portfolio
+    percentiles at retirement, and `P(no year below 2×lean)` / `P(no year
+    below fat)` — mapping a "must never cut below X" statement onto ABW's
+    spending bands. stdlib only; runs in <2s.
 - **Guyton-Klinger guardrails** — start ~0.5–1pp above static SWR with ±20%
   bands: cut ~10% if the withdrawal rate rises >band above initial, raise ~10%
   if it falls >band below. Higher early income, accepts real cuts in bad
@@ -61,7 +86,7 @@ category; on merchant only for keywords ≥6 chars, so "buy" doesn't catch
 | `allocation` | Asset Allocation | three-fund vs target, 5/25 bands, ER fee drag |
 | `asset-location` | Asset Location | tax-efficient placement; flags bonds in taxable |
 | `fire-progress` | FIRE Progress | retirement budget × tax gross-up ÷ horizon SWR; tiers |
-| `withdrawal` | Safe Withdrawal & Dynamic Spending | horizon SWR + Guyton-Klinger guardrails + Coast FIRE |
+| `withdrawal` | Safe Withdrawal & Dynamic Spending | horizon SWR + Guyton-Klinger guardrails + **TPAW/ABW** (schedule + MC bands) + Coast FIRE |
 | `savings-rate` | Savings Rate | consumption rate + capital-deployed rate; one-time months flagged |
 | `expenses` | Expense Analysis | 3 sections: recurring / lumpy allowances / excluded capital+transfers |
 | `emergency-fund` | Emergency Fund | contextual (cash vs accessible liquid; stability-aware target) |
@@ -80,7 +105,15 @@ category; on merchant only for keywords ≥6 chars, so "buy" doesn't catch
   "retirement_age": 65,
   "life_expectancy_age": 95,            // drives horizon SWR
   "expected_real_return_pct": 5.0,
-  "withdrawal_strategy": "static",      // "static" | "guardrails"
+  "withdrawal_strategy": "static",      // "static" | "guardrails" | "tpaw"
+  // TPAW / ABW (Part C):
+  "spending_tilt_pct": 0.0,             // g, real %/yr; negative = front-load
+  "income_streams": [                   // PV'd as bonds into the total portfolio
+    {"name": "Social Security", "annual": 48000, "start_age": 70, "end_age": null}
+  ],
+  "annual_new_savings": null,           // real $/yr to retirement; null → ASK (A4)
+  "equity_vol_pct": 20.0,               // MC return vol
+  "income_discount_rate_pct": 2.0,      // real bond-rate PV for income streams
   "guardrail_initial_swr_pct": 4.5,
   "guardrail_band_pct": 20,
   // allocation targets (three-fund)
@@ -130,6 +163,20 @@ horizon-derived). `annual_expenses_override` wins for the budget base.
   precision.
 - Asset class & fund ER come from built-in maps; unmapped funds are excluded
   from the ER figure (not guessed).
+
+## TPAW worked example (the field case)
+
+Investable $2.95M, currently age 50, retire at 50→92 (`n=42`), `r≈4.4%` real,
+`g=−1.5%`, 5y × $250k new savings before retirement, Social Security $48k/yr at
+age 70. Then:
+- ABW rate = `r_eff/(1−(1+r_eff)^−42)` with `r_eff=(1.044/0.985)−1≈0.060` →
+  **≈6.6%**.
+- Projected investable at retirement ≈ $2.95M·(1.044)^5 + FV($250k×5y) ≈ **$5.0M**.
+- Total portfolio = $5.0M + PV(SS at 50, 2% real) → year-1 spend ≈
+  `6.6% × (≈$5.0M + PV(SS))` ≈ **$348k** gross.
+A negative tilt schedules spending to **decline** in real terms over
+retirement — front-loading life-value while the portfolio still self-corrects
+each year via re-amortization.
 
 ## Rendering the dashboard (for Claude)
 Run `fetch.py dashboard` (summaries + KPIs) and `fetch.py report all` (bodies),

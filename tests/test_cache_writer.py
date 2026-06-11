@@ -332,3 +332,131 @@ def test_schema_migration_v1_to_v2(tmp_path):
             "SELECT COUNT(*) FROM net_worth_history").fetchone()[0] == 1
     finally:
         c.close()
+
+
+# --------------------------------------------------------------------------- #
+# v0.9.0 — MCP-mode hardening (B1–B4) and A2/A3 normalization
+# --------------------------------------------------------------------------- #
+def _acct(cache, id, name, type="brokerage"):
+    cache.write_accounts([{"id": id, "name": name, "type": type,
+                           "subtype": "brokerage", "balance": 1000.0}])
+
+
+def test_holdings_from_investments_b1(cache):
+    _acct(cache, "a1", "Fidelity Taxable")
+    _acct(cache, "a2", "Roth IRA")
+    data = {"holdings": [
+        {"ticker": "VTI", "name": "Vanguard Total", "security_type": "etf",
+         "value": 30000.0, "variation_dollars": 6000.0,
+         "account_holdings": [
+             {"account_name": "Fidelity Taxable", "quantity": 200.0},
+             {"account_name": "Roth IRA", "quantity": 100.0}]},
+        {"ticker": None, "name": "SS TOT STK MKT", "security_type": "other",
+         "value": 5000.0, "variation_dollars": 0.0,
+         "account_holdings": [{"account_name": "Roth IRA", "quantity": 50.0}]},
+    ]}
+    summary = cache_writer.write_table(cache, "holdings", data,
+                                       from_investments=True)
+    assert "across 2 accounts" in summary
+    # VTI: price = 30000/300 = 100; basis total = 30000-6000 = 24000
+    a1 = cache._conn.execute(
+        "SELECT quantity, value, cost_basis FROM holdings "
+        "WHERE account_id='a1' AND ticker='VTI'").fetchone()
+    assert a1 == (200.0, 20000.0, 16000.0)  # 24000 * 200/300
+    # null-ticker 'other' security → basis NULL
+    nb = cache._conn.execute(
+        "SELECT cost_basis FROM holdings WHERE name='SS TOT STK MKT'").fetchone()
+    assert nb[0] is None
+
+
+def test_holdings_from_investments_unmatched_account_errors(cache):
+    _acct(cache, "a1", "Fidelity Taxable")
+    data = {"holdings": [{"ticker": "VTI", "value": 100.0,
+            "variation_dollars": 0.0,
+            "account_holdings": [{"account_name": "Nonexistent", "quantity": 1}]}]}
+    with pytest.raises(Exception):
+        cache_writer.write_table(cache, "holdings", data, from_investments=True)
+
+
+def test_cashflow_multi_month_b2(cache):
+    data = {"months": [
+        {"period": "2026-01", "income": 10000, "expense": 6000},
+        {"period": "2026-02", "income": 10000, "expense": 5500},
+        {"period": "2026-03", "income": 12000, "expense": 7000}]}
+    summary = cache_writer.write_table(cache, "cashflow", data)
+    assert "3 month" in summary
+    assert _count(cache, "cashflow") == 3
+    row = cache._conn.execute(
+        "SELECT income, expense FROM cashflow WHERE period='2026-03'").fetchone()
+    assert row == (12000.0, 7000.0)
+
+
+def test_recurring_four_bucket_b3(cache):
+    data = {
+        "recurring_income_streams": {"recurring_transaction_streams": [
+            {"stream": {"id": "s1", "frequency": "biweekly",
+                        "merchant": {"name": "Employer"}},
+             "amount": 4000, "next_forecasted_date": "2026-07-01"}]},
+        "recurring_expense_streams": {"recurring_transaction_streams": [
+            {"stream": {"id": "s2", "frequency": "monthly",
+                        "merchant": {"name": "Mortgage Co"}},
+             "amount": -2500, "next_forecasted_date": "2026-07-05"}]},
+        "recurring_credit_card_streams": {"recurring_transaction_streams": [
+            {"stream": {"id": "cc", "frequency": "monthly"},
+             "amount": -1000, "next_forecasted_date": "2026-07-10"}]},
+        "recurring_transfer_streams": {"recurring_transaction_streams": [
+            {"stream": {"id": "xf", "frequency": "monthly"}, "amount": -500}]},
+    }
+    cache_writer.write_table(cache, "recurring", data)
+    # income + expense only (credit-card + transfer skipped)
+    assert _count(cache, "recurring") == 2
+    nxt = cache._conn.execute(
+        "SELECT next_date FROM recurring WHERE id='s1'").fetchone()
+    assert nxt[0] == "2026-07-01"
+
+
+def test_unwrap_tool_result_envelope_b4(cache):
+    inner = json.dumps({"accounts": [
+        {"id": "a1", "name": "Checking", "type": "checking",
+         "balance": 5000.0}]})
+    wrapped = [{"type": "text", "text": inner}]
+    assert cache_writer._unwrap_tool_result(wrapped) == json.loads(inner)
+
+
+def test_mcp_display_type_classification_a2(cache):
+    # MCP display types with no subtype → correct buckets, no manual SQL.
+    from fetch import normalize_account
+    accts = [
+        {"id": "r1", "name": "Fidelity Roth", "type": "Roth IRA", "balance": 1},
+        {"id": "k1", "name": "Work 401k", "type": "401k", "balance": 1},
+        {"id": "h1", "name": "HSA", "type": "Health Savings Account (HSA)",
+         "balance": 1},
+        {"id": "t1", "name": "Family Trust", "type": "Trust", "balance": 1},
+        {"id": "b1", "name": "Taxable", "type": "Brokerage (Taxable)",
+         "balance": 1},
+    ]
+    cache.write_accounts([normalize_account(a) for a in accts])
+    bk = dict(cache._conn.execute(
+        "SELECT account_id, tax_bucket FROM account_tax_buckets").fetchall())
+    assert bk["r1"] == "roth"
+    assert bk["k1"] == "traditional"
+    assert bk["h1"] == "hsa"
+    assert bk["t1"] == "taxable"
+    assert bk["b1"] == "taxable"
+    # all became investment/brokerage (pass the reports' type filter)
+    types = dict(cache._conn.execute("SELECT id, type FROM accounts").fetchall())
+    assert all(t in ("investment", "brokerage") for t in types.values())
+
+
+def test_charitable_other_type_excluded_a3(cache):
+    from fetch import normalize_account
+    accts = [
+        {"id": "d1", "name": "CHARITABLE FUND (Daffy)", "type": "Other",
+         "balance": 50000.0},
+        {"id": "d2", "name": "My DAF", "type": "Other", "balance": 10000.0},
+    ]
+    cache.write_accounts([normalize_account(a) for a in accts])
+    bk = dict(cache._conn.execute(
+        "SELECT account_id, tax_bucket FROM account_tax_buckets").fetchall())
+    assert bk["d1"] == "excluded"
+    assert bk["d2"] == "excluded"

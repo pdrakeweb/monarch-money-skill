@@ -1,6 +1,6 @@
 ---
 name: "monarch-money"
-version: "0.8.0"
+version: "0.9.0"
 description: >
   Access and analyze the user's Monarch Money financial data: accounts, balances,
   net worth, investment holdings, transactions, budgets, and cashflow. Use this
@@ -34,23 +34,57 @@ Detection: attempt `check_auth_status` (robcerda MCP) or `get_accounts`. If
 either succeeds, MCP mode is active. If both fail with "tool not found", fall
 back to Direct Mode.
 
-MCP tool → cache_writer.py mapping:
-| Data | MCP tool | cache_writer table |
-|------|----------|--------------------|
-| Accounts | `get_accounts` | `--table accounts` |
-| Holdings | `get_account_holdings --account_id ID` | `--table holdings --account-id ID` |
-| Transactions | `get_transactions --start_date X --end_date Y` | `--table transactions` |
-| Budgets | `get_budgets --start_date X --end_date Y` | `--table budgets --period YYYY-MM` |
-| Cashflow | `get_cashflow --start_date X --end_date Y` | `--table cashflow --period YYYY-MM` |
-| Recurring | `get_recurring_transactions` | `--table recurring` |
-| Net worth history | `get_net_worth --start_date X --end_date Y` | `--table net-worth-history` |
-| Account balance history | `get_account_balance_history --account_id ID` | `--table account-balance-history --account-id ID` |
+MCP tool → cache_writer.py mapping. Two server families ship different tool
+names — **official monarchmoney/monarch-mcp** (PascalCase) and **robcerda**
+(snake_case). Both are supported.
+
+| Data | Official MCP tool | robcerda tool | cache_writer table |
+|------|-------------------|---------------|--------------------|
+| Accounts | `GetAccounts` | `get_accounts` | `--table accounts` |
+| Holdings | `GetInvestments` (one row/security) | `get_account_holdings --account_id ID` | `--table holdings --from-investments` (official) / `--table holdings --account-id ID` (robcerda) |
+| Transactions | `GetTransactions` (paginated, see below) | `get_transactions` | `--table transactions` |
+| Budgets | — | `get_budgets` | `--table budgets --period YYYY-MM` |
+| Cashflow | `GetCashFlow` ×2 (income+expense, see below) | `get_cashflow` | `--table cashflow` (combined payload) |
+| Recurring | `GetRecurring` (4-bucket shape) | `get_recurring_transactions` | `--table recurring` |
+| Net worth history | `GetNetWorthHistory` | `get_net_worth` | `--table net-worth-history` |
+| Account balance history | — | `get_account_balance_history --account_id ID` | `--table account-balance-history --account-id ID` |
 
 **Write to cache:** `<mcp_json_output> | python scripts/cache_writer.py --table TABLE [options]`
-Or: `python scripts/cache_writer.py --table TABLE --input <(echo 'JSON_STRING')`
+On Windows PowerShell: write MCP output to a temp file, then
+`python scripts/cache_writer.py --table accounts --input $env:TEMP\mm_accounts.json`.
 
-On Windows PowerShell (likely): write MCP output to a temp file, then:
-`python scripts/cache_writer.py --table accounts --input $env:TEMP\mm_accounts.json`
+**Wrapped tool results:** MCP results may arrive as
+`[{"type":"text","text":"<json-string>"}]`. cache_writer auto-unwraps that
+envelope (parses the inner `text`); pipe it in as-is.
+
+**Official MCP recipes (v0.9.0):**
+- **Accounts** — `GetAccounts` returns human display `type`s (`Roth IRA`,
+  `401k`, `Brokerage (Taxable)`, `Trust`, `Health Savings Account (HSA)`,
+  `Other`, …) with NO `subtype`. cache_writer maps these to canonical
+  type+subtype so the tax-bucket classifier and the reports' investment
+  filters work with **zero manual SQL**. Unknown display types pass through
+  and surface in the unclassified warning.
+- **Holdings** — official MCP has no per-account holdings call. `GetInvestments`
+  returns one row per security with `account_holdings:[{account_name,
+  quantity}]`, combined `value`, `variation_dollars` (unrealized P/L),
+  `security_type`, and **no cost basis**. Pipe it with
+  `--table holdings --from-investments` (sync accounts first — it maps
+  `account_name`→id; blended basis = value−variation prorated by quantity;
+  NULL basis for null-ticker / `security_type=="other"` employer funds).
+- **Cashflow** — `GetCashFlow` returns net only by default; income and expense
+  need two calls with `filters={"category_type":"income"|"expense"}`. Combine
+  them into one payload `{"months":[{"period":"YYYY-MM","income":X,"expense":Y}]}`
+  and pipe once (`--table cashflow`, no `--period` needed — it loops).
+- **Recurring** — `GetRecurring` returns four buckets
+  (`recurring_income_streams` / `_expense_streams` / `_credit_card_streams` /
+  `_transfer_streams`), each wrapping `recurring_transaction_streams:[...]`.
+  cache_writer flattens income+expense (skips credit-card = duplicate spend,
+  and transfers), mapping `next_forecasted_date`→next date.
+- **Transactions pagination** — `GetTransactions` truncates at 1,000 rows and
+  sets `"truncated": true` + `transaction_count`. Pull newest-first with
+  `limit=1000`; while `truncated`, re-call with `end_date` = (earliest
+  returned date − 1 day). Idempotent inserts make the boundary overlap
+  harmless. A 12-month pull is typically 3–4 calls.
 
 cache_writer.py normalizes camelCase MCP fields to the cache's snake_case
 schema, runs the SAME tax-bucket classification and idempotent inserts as
@@ -299,14 +333,30 @@ interview before computing** — you conduct it, it is not a code loop. Order:
 3. **Ask ONLY the genuine gaps, batched, with pick-lists** (the surface has a
    tappable multi-select — use it; don't make the user free-type a choosable
    value). Question bank (ask only what context can't answer):
-   - birth year / current age; target retirement age; life-expectancy planning
-     age (default 95).
+   - **birth year as a NUMBER** (e.g. "1976") — never an age range; the
+     horizon math is sensitive and a range pick produced a 4-year error in the
+     field. Then target retirement age; life-expectancy planning age
+     (default 95).
+   - **withdrawal philosophy** (pick-list): fixed SWR / Guyton-Klinger
+     guardrails / **TPAW** (amortization-based variable withdrawal) →
+     `withdrawal_strategy`.
+   - **spending tilt** (pick-list): flat / **front-load** (earlier years worth
+     more — die-with-zero) / back-load → `spending_tilt_pct` (front-load =
+     negative, e.g. −1.5%).
+   - **income streams**: Social Security estimate + claim age, pensions →
+     `income_streams` (PV'd as bonds into the TPAW total portfolio).
+   - **annual new savings** to retirement (`annual_new_savings`) — ASK
+     explicitly and say WHY it can't be inferred: brokerage buys/sells churn
+     through transactions so it's not observable from the cache (A4). Needed
+     for the FIRE trajectory and the MC accumulation phase.
    - anticipated expense changes at 1y/5y/10y (pick-list: new vehicle,
      boat/upgrade, remodel, move/new mortgage, child costs start/end,
      healthcare change, eldercare, none) + amount + horizon → routes to
      `anticipated_changes` (`one_time` or `lumpy`).
-   - risk tolerance (conservative/moderate/aggressive/very aggressive) —
-     confirm against observed allocation rather than asking blind.
+   - **risk tolerance phrased as confidence** (pick-list): "must never cut" /
+     "small cuts OK" / "wide bands OK — 50–60% confidence". Maps onto the MC
+     confidence readouts and guardrail/TPAW band width. Confirm against
+     observed allocation rather than asking blind.
    - risk capacity (years to retirement, income stability, % of NW
      discretionary).
    - sector/factor views 1y/5y/10y (pick-list: AI/semis, broad tech,
@@ -363,13 +413,25 @@ literate; lead with the number and the non-obvious caveat.
 
 ## 5. Correcting tax buckets
 
+**Hidden accounts (esp. DAFs) don't flow through MCP.** Monarch's account
+endpoints (MCP `GetAccounts` / robcerda `get_accounts`) omit accounts the user
+hid in Monarch — and DAFs are commonly hidden. If the user reports a *missing*
+account, **ask whether it's hidden in Monarch before debugging**. After they
+unhide it, one re-pull + the name classifier (below) handles it — a DAF named
+"CHARITABLE FUND" / containing "DAF" / "Daffy" auto-classifies to `excluded`
+regardless of account type.
+
 Buckets are auto-classified from each account's Monarch subtype — and, where
 the subtype is ambiguous, its name — on every sync (`roth`, `traditional`,
-`hsa`, `taxable`, `excluded`, `other`). Notable rules: `trust` → taxable;
+`hsa`, `taxable`, `excluded`, `other`). The `excluded` bucket (DAF / charitable)
+is **authoritative regardless of account type** — those accounts are kept out
+of investable assets, FIRE, allocation, and TLH, and surface only in
+`daf_total()` and the Net Means line. Notable rules: `trust` → taxable;
 `non_taxable_brokerage_account` (employer windows like Fidelity BrokerageLink)
 → roth if the account name says Roth, else traditional; charitable /
-donor-advised accounts (Charitable, Daffy, …) → `excluded`, which keeps them
-out of asset-location math without nagging. Auto rows are refreshed each sync
+donor-advised accounts (Charitable, Daffy, DAF) → `excluded`. MCP display types
+(`Roth IRA`, `401k`, `Brokerage (Taxable)`, `Trust`, …) are mapped to canonical
+type+subtype on write so classification works with zero manual SQL. Auto rows are refreshed each sync
 but never overwrite a user correction. To force a full re-inference from
 scratch (e.g. after a classifier change): `python scripts/fetch.py clear-cache`
 then re-sync — user corrections survive the clear unless

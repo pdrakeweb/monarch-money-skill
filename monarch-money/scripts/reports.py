@@ -28,9 +28,15 @@ DEFAULT_PROFILE = {
     "retirement_age": 65,
     "life_expectancy_age": 95,
     "expected_real_return_pct": 5.0,
-    "withdrawal_strategy": "static",  # "static" | "guardrails"
+    "withdrawal_strategy": "static",  # "static" | "guardrails" | "tpaw"
     "guardrail_initial_swr_pct": 4.5,
     "guardrail_band_pct": 20,
+    # --- TPAW / ABW (Part C) ---
+    "spending_tilt_pct": 0.0,         # g, real %/yr; negative = front-load
+    "income_streams": [],            # [{name, annual, start_age, end_age}] PV'd as bonds
+    "annual_new_savings": None,      # real $/yr to retirement; None → ASK (A4 churn)
+    "equity_vol_pct": 20.0,          # for the MC bands
+    "income_discount_rate_pct": 2.0, # real bond-rate PV for income streams
     # --- allocation targets (three-fund) ---
     "target_us_stock_pct": 48.0,
     "target_intl_stock_pct": 32.0,
@@ -228,14 +234,30 @@ _CASH_TYPES = ("checking", "savings", "depository", "cash")
 _INVEST_TYPES = ("investment", "brokerage")
 
 
+def excluded_account_ids(cache):
+    """Account ids whose tax bucket is 'excluded' (DAF / charitable). The
+    `excluded` bucket is authoritative regardless of account type — these are
+    kept out of every FIRE/withdrawal/allocation aggregate and surface only in
+    daf_total() and the Net Means line (A1)."""
+    rows = cache._conn.execute(
+        "SELECT account_id FROM account_tax_buckets WHERE tax_bucket='excluded'"
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
 def cash_total(cache):
-    return sum(b or 0 for _, _, t, _, b in _accounts(cache)
-              if (t or "").lower() in _CASH_TYPES and (b or 0) > 0)
+    ex = excluded_account_ids(cache)
+    return sum(b or 0 for i, _, t, _, b in _accounts(cache)
+              if i not in ex and (t or "").lower() in _CASH_TYPES
+              and (b or 0) > 0)
 
 
 def investable_assets(cache):
+    ex = excluded_account_ids(cache)
     total = 0.0
-    for _, _, t, _, b in _accounts(cache):
+    for i, _, t, _, b in _accounts(cache):
+        if i in ex:
+            continue
         tl = (t or "").lower()
         if (b or 0) > 0 and (tl in _CASH_TYPES or tl in _INVEST_TYPES):
             total += b
@@ -262,8 +284,12 @@ def daf_total(cache):
 
 
 def _holdings(cache):
+    """Holdings excluding any in a DAF/`excluded` account (A1) — allocation,
+    concentration, and TLH are about the user's own portfolio."""
     return cache._conn.execute(
-        "SELECT account_id, ticker, name, value, cost_basis FROM holdings"
+        "SELECT account_id, ticker, name, value, cost_basis FROM holdings "
+        "WHERE account_id NOT IN "
+        "(SELECT account_id FROM account_tax_buckets WHERE tax_bucket='excluded')"
     ).fetchall()
 
 
@@ -326,12 +352,51 @@ def expense_breakdown(cache, profile, window=12):
     }
 
 
-def _income_monthly(cache, profile, months):
+# Positive-amount transactions that are brokerage churn / transfer credits,
+# NOT real income: sale proceeds, reinvested div/cap-gains, transfers,
+# deposits/withdrawals (A4). Reuses the profile transfer list + a few extras.
+_INCOME_EXCLUDE_EXTRA = ("sell", "reinvest", "dividends & capital gains",
+                         "rollover")
+
+
+def _is_brokerage_income(cat, mer, profile):
+    c, m = _norm(cat), _norm(mer)
+    for kw in list(profile.get("transfer_categories", [])) + \
+            list(_INCOME_EXCLUDE_EXTRA):
+        if _kw_match(kw, c, m):
+            return True
+    return False
+
+
+def real_income_by_month(cache, profile):
+    """Per-month real income — excludes brokerage proceeds / transfer credits
+    so the savings-rate denominator isn't fiction (A4)."""
     rows = cache._conn.execute(
-        "SELECT strftime('%Y-%m', date) m, SUM(amount) FROM transactions "
-        "WHERE amount > 0 GROUP BY m"
+        "SELECT date, category, merchant, amount FROM transactions "
+        "WHERE amount > 0"
     ).fetchall()
-    inc = {m: v for m, v in rows}
+    out = {}
+    for date, cat, mer, amt in rows:
+        if _is_brokerage_income(cat, mer, profile):
+            continue
+        m = (date or "")[:7]
+        out[m] = out.get(m, 0) + (amt or 0)
+    return out
+
+
+def recurring_income_monthly(cache):
+    """Monthly run-rate of positive recurring income streams (paychecks),
+    from the recurring table — the sanity baseline for the income caveat."""
+    rows = cache._conn.execute(
+        "SELECT amount, frequency FROM recurring WHERE amount > 0"
+    ).fetchall()
+    mult = {"monthly": 1, "biweekly": 2.17, "weekly": 4.33, "yearly": 1 / 12,
+            "annually": 1 / 12, "quarterly": 1 / 3, "semimonthly": 2}
+    return sum((a or 0) * mult.get((f or "").lower(), 1) for a, f in rows)
+
+
+def _income_monthly(cache, profile, months):
+    inc = real_income_by_month(cache, profile)
     if not months:
         return 0.0
     vals = [inc.get(m, 0) or 0 for m in months]
@@ -460,6 +525,176 @@ def fire_number(cache, profile):
     return num, {"budget": budget, "comp": comp, "eff_tax": eff,
                  "shares": shares, "gross": gross, "swr": swr,
                  "swr_src": swr_src}
+
+
+# --------------------------------------------------------------------------- #
+# TPAW / ABW — amortization-based variable withdrawal on the total portfolio
+# (Ben Mathew's lifecycle model). Refs: Bogleheads "Total portfolio allocation
+# and withdrawal" + "Amortization based withdrawal formulas". (Part C)
+# --------------------------------------------------------------------------- #
+import math as _math  # noqa: E402
+import random as _random  # noqa: E402
+
+
+def abw_rate(r, g, n):
+    """Amortization-based withdrawal rate with spending tilt g over horizon n.
+    r_eff = (1+r)/(1+g) − 1; rate = r_eff / (1 − (1+r_eff)^−n); 1/n at r_eff=0."""
+    n = max(1, int(round(n)))
+    r_eff = (1 + r) / (1 + g) - 1
+    if abs(r_eff) < 1e-9:
+        return 1.0 / n
+    return r_eff / (1 - (1 + r_eff) ** (-n))
+
+
+def pv_income_streams(profile, at_age, discount_rate):
+    """PV at `at_age` of the remaining real income streams (SS, pensions),
+    discounted at the real bond rate. Streams pay `annual` from start_age to
+    end_age (default life expectancy)."""
+    le = profile.get("life_expectancy_age", 95) or 95
+    d = discount_rate
+    pv = 0.0
+    for s in profile.get("income_streams", []) or []:
+        annual = s.get("annual", 0) or 0
+        start = s.get("start_age", at_age) or at_age
+        end = s.get("end_age") or le
+        for age in range(int(max(start, at_age)), int(end) + 1):
+            pv += annual / ((1 + d) ** (age - at_age))
+    return pv
+
+
+def projected_investable_at_retirement(cache, profile):
+    """Deterministic: current investable grown at the real return to
+    retirement age, plus the FV of annual_new_savings (None → 0, flagged)."""
+    inv = investable_assets(cache)
+    r = profile.get("expected_real_return_pct", 5.0) / 100
+    age = _current_age(profile)
+    ret_age = profile.get("retirement_age", 65)
+    if not age or ret_age <= age:
+        return inv, 0.0, (profile.get("annual_new_savings") is None)
+    yrs = ret_age - age
+    grown = inv * (1 + r) ** yrs
+    save = profile.get("annual_new_savings")
+    save_unknown = save is None
+    fv_save = 0.0
+    if save:
+        fv_save = save * (((1 + r) ** yrs - 1) / r) if r else save * yrs
+    return grown + fv_save, fv_save, save_unknown
+
+
+def tpaw_total_portfolio(cache, profile, at_retirement=True):
+    """Total portfolio = liquid balance + PV(remaining income streams)."""
+    d = profile.get("income_discount_rate_pct", 2.0) / 100
+    if at_retirement:
+        bal, _, _ = projected_investable_at_retirement(cache, profile)
+        age = profile.get("retirement_age", 65)
+    else:
+        bal = investable_assets(cache)
+        age = _current_age(profile) or profile.get("retirement_age", 65)
+    return bal + pv_income_streams(profile, age, d), bal
+
+
+def tpaw_initial_spending(cache, profile, g=None):
+    """Deterministic year-1 (gross) spending under ABW at retirement."""
+    r = profile.get("expected_real_return_pct", 5.0) / 100
+    g = profile.get("spending_tilt_pct", 0.0) / 100 if g is None else g
+    n = max(1, (profile.get("life_expectancy_age", 95)
+                - profile.get("retirement_age", 65)))
+    rate = abw_rate(r, g, n)
+    total, bal = tpaw_total_portfolio(cache, profile, at_retirement=True)
+    return rate, rate * total, total, bal
+
+
+def _sample_real_return(rng, mu_g, sigma):
+    """One annual lognormal real return. Arithmetic mean μ_a = μ_g + σ²/2."""
+    mu_a = mu_g + sigma ** 2 / 2
+    s2 = _math.log(1 + sigma ** 2 / (1 + mu_a) ** 2)
+    m = _math.log(1 + mu_a) - s2 / 2
+    return _math.exp(rng.gauss(m, _math.sqrt(s2))) - 1
+
+
+def _pctile(sorted_vals, q):
+    if not sorted_vals:
+        return 0.0
+    i = q * (len(sorted_vals) - 1)
+    lo = int(_math.floor(i))
+    hi = int(_math.ceil(i))
+    if lo == hi:
+        return sorted_vals[lo]
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (i - lo)
+
+
+def tpaw_monte_carlo(cache, profile, paths=2000, seed=42):
+    """Lognormal-return MC of the ABW path. Accumulates annual_new_savings to
+    retirement, then re-amortizes the total portfolio each year (liquidity-
+    constrained — never borrow against future income). Returns spending
+    percentiles at 5-year ages, portfolio percentiles at retirement, and two
+    confidence readouts. stdlib only; ~2000×n is well under 2s."""
+    rng = _random.Random(seed)
+    r = profile.get("expected_real_return_pct", 5.0) / 100
+    sigma = profile.get("equity_vol_pct", 20.0) / 100
+    g = profile.get("spending_tilt_pct", 0.0) / 100
+    d = profile.get("income_discount_rate_pct", 2.0) / 100
+    age0 = _current_age(profile)
+    ret_age = profile.get("retirement_age", 65)
+    le = profile.get("life_expectancy_age", 95)
+    save = profile.get("annual_new_savings") or 0.0
+    inv0 = investable_assets(cache)
+    lean2 = (profile.get("lean_annual_expenses", 40000) or 0) * 2
+    fat = profile.get("fat_annual_expenses", 100000) or 0
+    if not age0:
+        age0 = ret_age  # no birth year → treat as at-retirement
+
+    sample_ages = list(range(ret_age, le + 1, 5))
+    spend_at_age = {a: [] for a in sample_ages}
+    port_at_ret = []
+    min_spend = []
+    terminal = []
+    for _ in range(paths):
+        bal = inv0
+        path_min = None
+        for age in range(age0, le + 1):
+            ret_t = _sample_real_return(rng, r, sigma)
+            if age < ret_age:
+                bal = bal * (1 + ret_t) + save
+                continue
+            if age == ret_age:
+                port_at_ret.append(bal)
+            total = bal + pv_income_streams(profile, age, d)
+            rate = abw_rate(r, g, max(1, le - age + 1))
+            spending = rate * total
+            stream_inc = sum(
+                (s.get("annual", 0) or 0)
+                for s in (profile.get("income_streams", []) or [])
+                if (s.get("start_age", age) or age) <= age
+                <= (s.get("end_age") or le))
+            draw = min(max(0.0, spending - stream_inc), bal)  # liquidity cap
+            realized = stream_inc + draw
+            if age in spend_at_age:
+                spend_at_age[age].append(realized)
+            path_min = realized if path_min is None else min(path_min, realized)
+            bal = (bal - draw) * (1 + ret_t)
+        terminal.append(max(0.0, bal))
+        if path_min is not None:
+            min_spend.append(path_min)
+    def pcts(vals):
+        sv = sorted(vals)
+        return {q: _pctile(sv, p) for q, p in
+                (("p5", .05), ("p25", .25), ("p50", .5), ("p75", .75),
+                 ("p95", .95))}
+    return {
+        "spending_by_age": {a: pcts(v) for a, v in spend_at_age.items() if v},
+        "portfolio_at_retirement": pcts(port_at_ret) if port_at_ret else {},
+        "median_terminal": sorted(terminal)[len(terminal)//2] if terminal else 0,
+        "p_above_lean2x": (sum(1 for m in min_spend if m >= lean2)
+                           / len(min_spend)) if min_spend else 0.0,
+        "p_above_fat": (sum(1 for m in min_spend if m >= fat)
+                        / len(min_spend)) if min_spend else 0.0,
+        "lean2x": lean2, "fat": fat, "paths": paths,
+    }
+
+
+def is_tpaw(profile):
+    return (profile.get("withdrawal_strategy") or "static") == "tpaw"
 
 
 # --------------------------------------------------------------------------- #
@@ -602,11 +837,21 @@ def report_asset_location(cache, profile):
 def report_fire_progress(cache, profile):
     num, d = fire_number(cache, profile)
     inv = investable_assets(cache)
+    # Part C4: under TPAW the FIRE number divides by the ABW rate, not SWR.
+    tpaw = is_tpaw(profile)
+    if tpaw:
+        r = profile.get("expected_real_return_pct", 5.0) / 100
+        g = profile.get("spending_tilt_pct", 0.0) / 100
+        n = max(1, profile["life_expectancy_age"] - profile["retirement_age"])
+        rate = abw_rate(r, g, n)
+        num = d["gross"] / rate if rate else None
     fi_pct = (100 * inv / num) if num else None
     lean = profile["lean_annual_expenses"] * 25
     fat = profile["fat_annual_expenses"] * 25
+    divisor = (f"ABW rate {rate*100:.2f}% (tilt {g*100:+.1f}%, n={n})" if tpaw
+               else f"{d['swr']:.2f}% SWR")
     lines = [f"**{_pct(fi_pct)} to FI** — {_money(inv)} of {_money(num)} "
-             f"(retirement budget {_money(d['budget'])}, {d['swr']:.2f}% SWR)."]
+             f"(retirement budget {_money(d['budget'])}, {divisor})."]
     body = ["## FIRE Progress\n",
             f"- Retirement budget (today's $): **{_money(d['budget'])}** "
             f"(recurring {_money(d['comp']['recurring_annual'])} + lumpy "
@@ -616,11 +861,13 @@ def report_fire_progress(cache, profile):
             f"{_money(d['comp']['additions'])})",
             f"- Tax gross-up: ÷(1−{d['eff_tax']*100:.1f}%) for the "
             f"trad/LTCG-funded share → **gross {_money(d['gross'])}**",
-            f"- SWR: **{d['swr']:.2f}%** ({d['swr_src']}) → multiplier "
-            f"**{100/d['swr']:.1f}×**" if d['swr'] else "- SWR: —",
+            (f"- ABW rate: **{rate*100:.2f}%** (tilt {g*100:+.1f}%/yr, "
+             f"horizon {n}y) → **FIRE number = gross ÷ ABW rate**" if tpaw else
+             f"- SWR: **{d['swr']:.2f}%** ({d['swr_src']}) → multiplier "
+             f"**{100/d['swr']:.1f}×**" if d['swr'] else "- SWR: —"),
             f"- **FIRE number: {_money(num)}**",
-            f"- Investable assets: **{_money(inv)}**",
-            f"- **Progress to FI: {_pct(fi_pct)}**\n",
+            f"- Investable assets (snapshot): **{_money(inv)}**",
+            f"- **Progress to FI (snapshot): {_pct(fi_pct)}**\n",
             "| Tier | Annual spend | Target (25×) | Reached? |",
             "|---|---|---|---|",
             f"| Lean FIRE | {_money(profile['lean_annual_expenses'])} | "
@@ -631,6 +878,24 @@ def report_fire_progress(cache, profile):
             f"{_money(fat)} | {'✓' if inv>=fat else '—'} |"]
     if fi_pct is not None and fi_pct < 100:
         body.append(f"\nGap to FI: **{_money(num - inv)}**.")
+    # Part C4: trajectory line — projected investable AT retirement (the user
+    # complaint that the snapshot % ignored future contributions/growth).
+    proj, fv_save, save_unknown = projected_investable_at_retirement(cache, profile)
+    age = _current_age(profile)
+    if age and profile["retirement_age"] > age:
+        yrs = profile["retirement_age"] - age
+        r = profile.get("expected_real_return_pct", 5.0) / 100
+        line = (f"\n**Trajectory:** projected investable at retirement "
+                f"(age {profile['retirement_age']}, {yrs}y @ {r*100:.0f}% real) "
+                f"≈ **{_money(proj)}** = {_money(inv)}×(1+r)^{yrs} + "
+                f"contributions FV {_money(fv_save)}. "
+                f"Coast status vs that figure: "
+                f"{'✓ on track' if proj >= (num or 0) else _money((num or 0)-proj)+' short'}.")
+        if save_unknown:
+            line += (" ⚠ `annual_new_savings` is unset — contributions FV "
+                     "treated as $0; ask the user (brokerage churn makes it "
+                     "unobservable, A4).")
+        body.append(line)
     body.append("\n*Budget excludes investment contributions & one-time "
                 "capital outlays. Tax rates are effective retirement "
                 "assumptions (profile-set).*")
@@ -686,20 +951,77 @@ def report_withdrawal(cache, profile):
                      else f"{_money(coast-inv)} away."))
     else:
         body.append("Set `birth_year` to compute Coast FIRE.")
+
+    kpi = (f"{swr:.2f}% income", _money(inv * swr / 100))
+    if is_tpaw(profile):
+        tpaw_body, med_initial = _tpaw_withdrawal_section(cache, profile, d)
+        body += tpaw_body
+        lines.insert(0, f"**TPAW** amortized variable withdrawal — median "
+                        f"initial spend ≈ **{_money(med_initial)}/yr**.")
+        kpi = ("TPAW initial spend (med)", _money(med_initial))
     return {"title": "Safe Withdrawal & Dynamic Spending",
-            "kpi": (f"{swr:.2f}% income", _money(inv*swr/100)),
-            "summary": lines, "full": "\n".join(body)}
+            "kpi": kpi, "summary": lines, "full": "\n".join(body)}
+
+
+def _tpaw_withdrawal_section(cache, profile, d):
+    """ABW schedule for g ∈ {profile, 0, −1.5%} + Monte-Carlo spending bands.
+    Returns (body_lines, median_initial_spend)."""
+    r = profile.get("expected_real_return_pct", 5.0) / 100
+    g_prof = profile.get("spending_tilt_pct", 0.0) / 100
+    n = max(1, profile["life_expectancy_age"] - profile["retirement_age"])
+    total, bal = tpaw_total_portfolio(cache, profile, at_retirement=True)
+    pv_inc = total - bal
+    body = ["\n### TPAW — amortization-based variable withdrawal\n",
+            f"Total portfolio = projected investable {_money(bal)} + PV(income "
+            f"streams) {_money(pv_inc)} = **{_money(total)}** (Mathew's "
+            "lifecycle model; spending re-amortizes the *total* portfolio each "
+            "year).\n",
+            "| Spending tilt g | ABW rate | Year-1 spend (gross) | Schedule |",
+            "|---|---|---|---|"]
+    for g in sorted({g_prof, 0.0, -0.015}, reverse=True):
+        rate = abw_rate(r, g, n)
+        sched = ("front-loaded (declining real)" if g < 0 else
+                 "rising real" if g > 0 else "flat real")
+        mark = " ◀ yours" if abs(g - g_prof) < 1e-9 else ""
+        body.append(f"| {g*100:+.1f}%{mark} | {rate*100:.2f}% | "
+                    f"{_money(rate*total)} | {sched} |")
+    # Static-SWR comparison rows (labelled as comparison only).
+    body.append(f"\n*Static-SWR comparison (fixed draw, not ABW): "
+                f"{d['swr']:.2f}% of investable = "
+                f"{_money(investable_assets(cache)*d['swr']/100)}/yr.*")
+    # Monte Carlo bands
+    mc = tpaw_monte_carlo(cache, profile)
+    med_initial = 0.0
+    if mc["spending_by_age"]:
+        first_age = min(mc["spending_by_age"])
+        med_initial = mc["spending_by_age"][first_age]["p50"]
+        body += [f"\n### Monte Carlo spending bands ({mc['paths']} paths, "
+                 "lognormal real returns)\n",
+                 "| Age | p5 | p25 | p50 | p75 | p95 |", "|---|---|---|---|---|---|"]
+        for a in sorted(mc["spending_by_age"]):
+            p = mc["spending_by_age"][a]
+            body.append(f"| {a} | {_money(p['p5'])} | {_money(p['p25'])} | "
+                        f"{_money(p['p50'])} | {_money(p['p75'])} | "
+                        f"{_money(p['p95'])} |")
+        pr = mc["portfolio_at_retirement"]
+        if pr:
+            body.append(f"\nPortfolio at retirement: p5 {_money(pr['p5'])} · "
+                        f"p50 {_money(pr['p50'])} · p95 {_money(pr['p95'])}.")
+        body.append(
+            f"\n**Confidence:** P(no retirement year below "
+            f"{_money(mc['lean2x'])} = 2× lean) = **{mc['p_above_lean2x']*100:.0f}%**; "
+            f"P(no year below {_money(mc['fat'])} = fat) = "
+            f"**{mc['p_above_fat']*100:.0f}%**. These map a "
+            "\"must never cut below X\" statement onto ABW's spending bands — "
+            "ABW never depletes, but spending flexes with markets.")
+    return body, med_initial
 
 
 def report_savings_rate(cache, profile):
     bd = expense_breakdown(cache, profile)
     if not bd["n_months"]:
         return _empty("Savings Rate", "No transactions cached — run `sync-all`.")
-    inc_m = cache._conn.execute(
-        "SELECT strftime('%Y-%m', date) m, SUM(amount) FROM transactions "
-        "WHERE amount > 0 GROUP BY m"
-    ).fetchall()
-    inc = {m: (v or 0) for m, v in inc_m}
+    inc = real_income_by_month(cache, profile)   # A4: excludes brokerage churn
     months = bd["months"]
     tot_inc = sum(inc.get(m, 0) for m in months)
     tot_rec = sum(bd["by_month"][m]["recurring"] for m in months)
@@ -734,6 +1056,15 @@ def report_savings_rate(cache, profile):
                     f"({_money(bd['one_time_total'])} total) excluded from the "
                     "rate so a single capital month doesn't read as deeply "
                     "negative.")
+    # A4: income may still include brokerage proceeds the category list missed.
+    rec_inc_m = recurring_income_monthly(cache)
+    avg_inc_m = tot_inc / (len(months) or 1)
+    if rec_inc_m > 0 and avg_inc_m > 3 * rec_inc_m:
+        body.append(f"\n⚠ Avg monthly income ({_money(avg_inc_m)}) exceeds 3× "
+                    f"the recurring-paycheck run-rate ({_money(rec_inc_m)}/mo) "
+                    "— it may still include brokerage proceeds or RSU/transfer "
+                    "credits the category filter missed. Verify against "
+                    "payroll before trusting the denominator.")
     return {"title": "Savings Rate", "kpi": ("Savings rate", f"{cons_rate:.0f}%"),
             "summary": lines, "full": "\n".join(body)}
 
@@ -841,7 +1172,10 @@ def report_tlh(cache, profile):
     rows = cache._conn.execute(
         "SELECT account_id, ticker, name, value, cost_basis FROM holdings "
         "WHERE cost_basis IS NOT NULL AND ticker IS NOT NULL "
-        "AND value < cost_basis ORDER BY (value - cost_basis) ASC"
+        "AND value < cost_basis "
+        "AND account_id NOT IN (SELECT account_id FROM account_tax_buckets "
+        "WHERE tax_bucket='excluded') "
+        "ORDER BY (value - cost_basis) ASC"
     ).fetchall()
     loss = sum((v - cb) for _, _, _, v, cb in rows)
     lines = [f"**{_money(-loss)}** harvestable loss across {len(rows)} "
@@ -869,7 +1203,9 @@ def report_tlh(cache, profile):
 def report_concentration(cache, profile):
     rows = cache._conn.execute(
         "SELECT ticker, name, SUM(value) v FROM holdings "
-        "WHERE ticker IS NOT NULL GROUP BY ticker ORDER BY v DESC"
+        "WHERE ticker IS NOT NULL AND account_id NOT IN "
+        "(SELECT account_id FROM account_tax_buckets WHERE tax_bucket='excluded') "
+        "GROUP BY ticker ORDER BY v DESC"
     ).fetchall()
     total = sum(r[2] or 0 for r in rows)
     if total <= 0:
@@ -958,7 +1294,21 @@ def report_life_value(cache, profile):
             "than the same dollars now → **front-load** experiential & "
             "charitable spend; the static SWR is likely too conservative "
             "here."]
-    if end_bal is not None:
+    if is_tpaw(profile):
+        # C4: ABW can't deplete (it re-amortizes the remaining balance every
+        # year) — the fixed-draw "depletes before plan age" verdict is
+        # structurally wrong. Report the MC median terminal + tilt direction.
+        g = profile.get("spending_tilt_pct", 0.0)
+        sched = ("declining real (front-loaded)" if g < 0 else
+                 "rising real" if g > 0 else "flat real")
+        mc = tpaw_monte_carlo(cache, profile)
+        body.append(f"- **Spend-down glidepath (TPAW):** ABW never depletes — "
+                    f"median terminal real balance ≈ "
+                    f"**{_money(mc['median_terminal'])}**; tilt g={g:+.1f}%/yr "
+                    f"schedules spending **{sched}**. A large median terminal "
+                    "under a die-with-zero objective argues for a more negative "
+                    "tilt (spend/give more early).")
+    elif end_bal is not None:
         verdict = ("balloons — a die-with-zero signal to **spend/give more "
                    "now** (or earlier-retire)" if end_bal > inv * 0.5 else
                    "trends toward zero — consistent with the objective"

@@ -87,13 +87,52 @@ def _name_of(v):
     return v
 
 
+# Official Monarch MCP GetAccounts returns human DISPLAY types in `type` with
+# NO subtype (e.g. "Roth IRA", "401k", "Brokerage (Taxable)"). The tax-bucket
+# classifier keys off subtype and the reports filter type IN
+# ('investment','brokerage') — so without this map every MCP investment account
+# landed in bucket 'other' and fell out of every bucket-dependent report (A2).
+# Applied only when subtype is absent (Direct-mode GraphQL already supplies it).
+_DISPLAY_TYPE_MAP = {
+    "roth ira": ("investment", "roth_ira"),
+    "roth 401k": ("investment", "roth_401k"),
+    "401k": ("investment", "st_401k"),
+    "403b": ("investment", "st_403b"),
+    "individual retirement account (ira)": ("investment", "ira"),
+    "ira": ("investment", "ira"),
+    "health savings account (hsa)": ("investment", "hsa"),
+    "hsa": ("investment", "hsa"),
+    "trust": ("brokerage", "trust"),
+    "brokerage (taxable)": ("brokerage", "brokerage"),
+    "brokerage": ("brokerage", "brokerage"),
+    "taxable": ("brokerage", "brokerage"),
+    "stock plan": ("brokerage", "brokerage"),
+}
+
+
+def canonical_account_type(display_type, subtype):
+    """(type, subtype) for the cache. When subtype is present (Direct mode),
+    pass through. When absent (MCP display type), map known display types;
+    'Other' stays 'Other' so the name-based charitable check runs; unknown
+    types pass through unchanged (they'll surface via the unclassified warning
+    if they're investment-ish)."""
+    if subtype:
+        return display_type, subtype
+    key = (display_type or "").lower().strip()
+    if key in _DISPLAY_TYPE_MAP:
+        return _DISPLAY_TYPE_MAP[key]
+    return display_type, subtype
+
+
 def normalize_account(a):
     bal = a.get("balance", a.get("currentBalance"))
+    typ, sub = canonical_account_type(_name_of(a.get("type")),
+                                      _name_of(a.get("subtype")))
     return {
         "id": a.get("id"),
         "name": a.get("name") or a.get("displayName"),
-        "type": _name_of(a.get("type")),
-        "subtype": _name_of(a.get("subtype")),
+        "type": typ,
+        "subtype": sub,
         "institution": _name_of(a.get("institution")),
         "balance": bal,
         "display_balance": a.get("displayBalance", bal),

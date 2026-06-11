@@ -17,6 +17,7 @@ Nothing here ever prints a password, session token, or MFA secret to stdout.
 """
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -75,7 +76,10 @@ _EDU_KEYWORDS = ("529", "education")
 _TAXABLE_KEYWORDS = ("brokerage", "individual", "joint", "taxable",
                      "investment", "trust")
 _CHARITABLE_KEYWORDS = ("charitable", "daffy", "donor advised", "donor-advised",
-                        "giving account")
+                        "donor-advised fund", "giving account")
+# `daf` needs a word boundary so it doesn't match "default"/"daffodil"; matched
+# separately from the substring list. (A3)
+_DAF_WORD = re.compile(r"\bdaf\b", re.IGNORECASE)
 
 
 def infer_tax_bucket(subtype, name=None):
@@ -91,10 +95,11 @@ def infer_tax_bucket(subtype, name=None):
     s = (subtype or "").lower().replace("_", " ").strip()
     n = (name or "").lower()
     # Charitable / donor-advised funds: not the user's assets for tax
-    # purposes, whatever the subtype claims (often plain 'brokerage').
-    for kw in _CHARITABLE_KEYWORDS:
-        if kw in n:
-            return "excluded"
+    # purposes, whatever the subtype/type claims (Daffy syncs as name
+    # "CHARITABLE FUND (...)", type "Other"). This name check runs for ALL
+    # account types, before any subtype logic. (A3)
+    if any(kw in n for kw in _CHARITABLE_KEYWORDS) or _DAF_WORD.search(n):
+        return "excluded"
     if not s:
         return "other"
     if "roth" in s:

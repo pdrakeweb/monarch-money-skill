@@ -208,3 +208,113 @@ def test_reports_command_no_auth(capsys, db):
     code, out = _run(capsys, ["reports", "--db", db])
     assert code == 0
     assert "net-worth" in out
+
+
+# --------------------------------------------------------------------------- #
+# v0.9.0 — A1 (DAF leak) and A4 (income contamination)
+# --------------------------------------------------------------------------- #
+def test_daf_excluded_from_investable_a1(db):
+    c = MonarchCache(db)
+    try:
+        base = reports.investable_assets(c)
+        # Insert a DAF: brokerage type, bucket 'excluded'.
+        c.write_accounts([{"id": "daf1", "name": "CHARITABLE FUND",
+                           "type": "brokerage", "subtype": "brokerage",
+                           "balance": 250000.0}])
+        # name-based classifier should auto-set 'excluded'; assert it did
+        bucket = c._conn.execute(
+            "SELECT tax_bucket FROM account_tax_buckets WHERE account_id='daf1'"
+        ).fetchone()[0]
+        assert bucket == "excluded"
+        after = reports.investable_assets(c)
+        assert after == base                       # DAF did NOT inflate it (A1)
+        assert reports.daf_total(c) >= 250000.0    # but shows in daf_total
+    finally:
+        c.close()
+
+
+def test_savings_rate_excludes_brokerage_income_a4(db):
+    c = MonarchCache(db)
+    p = reports.DEFAULT_PROFILE
+    try:
+        base = reports.real_income_by_month(c, p)
+        base_total = sum(base.values())
+        # A big 'Sell' credit must NOT count as income.
+        c.write_transactions([{"id": "sell1", "account_id": "acc_005",
+                               "date": "2025-10-15", "amount": 500000.0,
+                               "category": "Sell", "merchant": "Fidelity"}])
+        after = reports.real_income_by_month(c, p)
+        assert sum(after.values()) == base_total   # sale proceeds excluded
+    finally:
+        c.close()
+
+
+# --------------------------------------------------------------------------- #
+# v0.9.0 — Part C: TPAW / ABW
+# --------------------------------------------------------------------------- #
+def test_abw_rate_matches_worked_example():
+    # r=4.4%, g=-1.5%, n=42 → ~6.6% (spec worked example)
+    rate = reports.abw_rate(0.044, -0.015, 42)
+    assert 0.064 <= rate <= 0.068
+    # r_eff == 0 limit → 1/n
+    assert abs(reports.abw_rate(0.0, 0.0, 40) - 1/40) < 1e-9
+
+
+def test_abw_negative_tilt_front_loads():
+    # more negative tilt → higher initial rate (front-load)
+    base = reports.abw_rate(0.05, 0.0, 40)
+    front = reports.abw_rate(0.05, -0.015, 40)
+    assert front > base
+
+
+def test_pv_income_streams():
+    p = dict(reports.DEFAULT_PROFILE, life_expectancy_age=92,
+             income_discount_rate_pct=2.0,
+             income_streams=[{"name": "SS", "annual": 48000,
+                              "start_age": 70, "end_age": None}])
+    pv_at_70 = reports.pv_income_streams(p, 70, 0.02)
+    pv_at_50 = reports.pv_income_streams(p, 50, 0.02)
+    assert pv_at_70 > 0
+    assert pv_at_50 < pv_at_70           # discounting 20 more years → smaller PV
+
+
+def test_tpaw_monte_carlo_under_2s_and_shaped(db):
+    import time
+    c = MonarchCache(db)
+    p = dict(reports.DEFAULT_PROFILE, withdrawal_strategy="tpaw",
+             birth_year=1980, retirement_age=50, life_expectancy_age=92,
+             spending_tilt_pct=-1.5, annual_new_savings=100000)
+    try:
+        t = time.time()
+        mc = reports.tpaw_monte_carlo(c, p, paths=2000)
+        assert time.time() - t < 2.0
+        assert mc["paths"] == 2000
+        assert mc["spending_by_age"]
+        assert 0.0 <= mc["p_above_lean2x"] <= 1.0
+        # reproducible (seeded)
+        mc2 = reports.tpaw_monte_carlo(c, p, paths=2000)
+        assert mc["median_terminal"] == mc2["median_terminal"]
+    finally:
+        c.close()
+
+
+def test_tpaw_strategy_branches(db):
+    c = MonarchCache(db)
+    p = dict(reports.DEFAULT_PROFILE, withdrawal_strategy="tpaw",
+             birth_year=1980, retirement_age=50, life_expectancy_age=92,
+             spending_tilt_pct=-1.5,
+             income_streams=[{"name": "SS", "annual": 48000, "start_age": 70}])
+    try:
+        w = reports.run_report(c, p, "withdrawal")
+        assert "TPAW" in w["full"] and "Monte Carlo" in w["full"]
+        assert w["kpi"][0] == "TPAW initial spend (med)"
+        fp = reports.run_report(c, p, "fire-progress")
+        assert "ABW rate" in fp["full"]
+        lv = reports.run_report(c, p, "life-value")
+        assert "never depletes" in lv["full"]
+        # static keeps the fixed-draw depletion logic
+        lv_static = reports.run_report(c, dict(p, withdrawal_strategy="static"),
+                                       "life-value")
+        assert "never depletes" not in lv_static["full"]
+    finally:
+        c.close()
