@@ -6,7 +6,7 @@ diverges from claude-skill-skeleton by design.
 
 # Bump on EVERY commit that changes this skill (see CLAUDE.md). Must match
 # the `version:` in SKILL.md frontmatter — builds refuse on mismatch.
-SKILL_VERSION = "1.3.0"
+SKILL_VERSION = "1.3.1"
 
 TTL_4H = 4 * 3600
 TTL_24H = 24 * 3600
@@ -179,5 +179,5 @@ SCHEMA = {
     # reproducible by re-syncing Monarch, so it is NOT exported.
     "config_tables": ["exclusions"],
 
-    "clear_meta_keys": ["last_full_sync", "last_tx_sync"],
+    "clear_meta_keys": ["last_full_sync", "last_tx_sync", "tx_earliest_synced"],
 }

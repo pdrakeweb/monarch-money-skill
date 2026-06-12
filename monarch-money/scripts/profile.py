@@ -24,12 +24,15 @@ PROFILE_SCHEMA = 2
 _IDENTITY_KEYS = {"birth_year", "state", "filing_status"}
 _RETIREMENT_KEYS = {
     "retirement_age", "life_expectancy_age", "withdrawal_strategy", "swr_pct",
-    "spending_tilt_pct", "expected_real_return_pct", "equity_vol_pct",
-    "annual_new_savings", "income_streams", "social_security",
+    "spending_tilt_pct", "spending_tilt_schedule", "expected_real_return_pct",
+    "equity_vol_pct", "annual_new_savings", "income_streams", "social_security",
     "retirement_expense_deltas", "retirement_trad_tax_rate",
     "retirement_ltcg_rate", "relocate_no_income_tax_state", "confidence_band",
     "guardrail_initial_swr_pct", "guardrail_band_pct", "income_discount_rate_pct",
     "retirement_expense_reductions",
+    # pre-80 mortgage-aware lean-floor risk gauge (TPAW Monte Carlo)
+    "lean_floor_pre_payoff", "lean_floor_post_payoff", "lean_floor_payoff_age",
+    "lean_window_max_age",
 }
 # Top-level (not a section) markers preserved across migration.
 _TOPLEVEL_KEYS = {"profile_complete"}

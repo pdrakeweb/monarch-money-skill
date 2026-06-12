@@ -284,6 +284,22 @@ def sync_holdings(ctx):
     return True
 
 
+def _tx_sync_start(last, earliest, days, refresh, today):
+    """Pure: pick the transaction-sync start date. Incremental resume from the
+    last sync (−3d overlap), BUT widen to the requested `days` window when it
+    reaches back further than what's been cached (tracked by `earliest`), or
+    when `refresh` forces the full window. Fixes `--days 365` being a no-op
+    after a prior sync."""
+    desired_start = today - _dt.timedelta(days=days)
+    if last:
+        start = _dt.date.fromisoformat(last) - _dt.timedelta(days=3)
+    else:
+        start = desired_start
+    if refresh or earliest is None or desired_start < _dt.date.fromisoformat(earliest):
+        start = min(start, desired_start)
+    return start
+
+
 def sync_transactions(ctx):
     cache = ctx.cache
     if not _need_sync(cache, "transactions", TTL_24H, ctx.refresh):
@@ -291,11 +307,15 @@ def sync_transactions(ctx):
     if ctx.mock:
         raw = load_fixture(ctx.fixtures_dir, "transactions")
     else:
+        # Incremental resume from the last sync (−3d overlap; idempotent inserts
+        # make the overlap harmless), BUT widen to the requested --days window
+        # when it asks for history not yet cached — otherwise `--days 365` is a
+        # no-op after any prior sync (it always resumed from last−3d). We track
+        # the earliest date ever synced so a deeper request pulls the gap; an
+        # explicit --refresh also forces the full requested window.
         last = cache.get_last_tx_sync()
-        if last:
-            start = (_dt.date.fromisoformat(last) - _dt.timedelta(days=3))
-        else:
-            start = _today() - _dt.timedelta(days=ctx.days)
+        earliest = cache.get_meta("tx_earliest_synced")
+        start = _tx_sync_start(last, earliest, ctx.days, ctx.refresh, _today())
         # get_transactions caps at `limit` per call — page until exhausted.
         raw = []
         offset = 0
@@ -311,6 +331,11 @@ def sync_transactions(ctx):
             if len(batch) < page:
                 break
             offset += page
+        # Remember the earliest window boundary we've fetched.
+        new_earliest = start.isoformat()
+        if earliest:
+            new_earliest = min(earliest, new_earliest)
+        cache.set_meta("tx_earliest_synced", new_earliest)
     rows = [normalize_txn(t) for t in raw]
     cache.write_transactions(rows)
     cache.set_last_tx_sync(_today().isoformat())

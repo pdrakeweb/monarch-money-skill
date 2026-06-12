@@ -77,6 +77,21 @@ def test_config_import_rejects_foreign_bundle(capsys, db, tmp_path):
     assert code == 1 and "config-export/v1" in out
 
 
+def test_tx_sync_start_widens_for_explicit_days():
+    import datetime as dt
+    today = dt.date(2026, 6, 12)
+    # fresh: no prior sync → full requested window
+    assert fetch._tx_sync_start(None, None, 30, False, today) == today - dt.timedelta(days=30)
+    # incremental default: a prior sync covering 30d → resume from last−3d
+    last = (today - dt.timedelta(days=1)).isoformat()
+    earliest = (today - dt.timedelta(days=30)).isoformat()
+    assert fetch._tx_sync_start(last, earliest, 30, False, today) == today - dt.timedelta(days=4)
+    # the bug: --days 365 after a prior sync must WIDEN, not no-op
+    assert fetch._tx_sync_start(last, earliest, 365, False, today) == today - dt.timedelta(days=365)
+    # --refresh forces the full requested window even within the cached span
+    assert fetch._tx_sync_start(last, earliest, 30, True, today) == today - dt.timedelta(days=30)
+
+
 def test_accounts_net_worth_excludes_hidden(capsys, db, tmp_path):
     # Build a modified fixtures dir with a large hidden account added.
     fx = tmp_path / "fx"
