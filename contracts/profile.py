@@ -33,6 +33,8 @@ _RETIREMENT_KEYS = {
     # pre-80 mortgage-aware lean-floor risk gauge (TPAW Monte Carlo)
     "lean_floor_pre_payoff", "lean_floor_post_payoff", "lean_floor_payoff_age",
     "lean_window_max_age",
+    # category-level retirement budget transforms (age-indexed)
+    "retirement_category_transforms",
 }
 # Top-level (not a section) markers preserved across migration.
 _TOPLEVEL_KEYS = {"profile_complete"}
