@@ -135,3 +135,28 @@ def test_open_cache_writable_tax_buckets(tmp_path):
             "SELECT COUNT(*) FROM account_tax_buckets").fetchone()[0] == 1
     finally:
         conn.close()
+
+
+# ---- family shared dir ---------------------------------------------------- #
+def test_shared_data_dir_honors_family_env(tmp_path, monkeypatch):
+    # The family override resolves the SAME dir regardless of which skill asks.
+    monkeypatch.setenv("MONARCH_MONEY_FAMILY_DIR", str(tmp_path))
+    a = C.shared_data_dir("/skills/monarch-money")
+    b = C.shared_data_dir("/skills/investing")
+    assert os.path.abspath(a) == os.path.abspath(b) == os.path.abspath(str(tmp_path))
+
+
+def test_consumer_opens_cache_producer_wrote(tmp_path, monkeypatch):
+    # monarch-money (producer) writes its cache to the shared dir; a consumer
+    # with a DIFFERENT skill dir resolves the SAME dir and opens it — the whole
+    # point of the family contract (it would miss it if it used its own dir).
+    monkeypatch.setenv("MONARCH_MONEY_FAMILY_DIR", str(tmp_path))
+    producer_dir = C.shared_data_dir("/skills/monarch-money")
+    _make_cache(C.cache_path(producer_dir), schema_version=2)
+    consumer_dir = C.shared_data_dir("/skills/personal-finance")
+    assert consumer_dir == producer_dir
+    conn = C.open_cache(consumer_dir, min_schema=2)   # read-only; raises if missing
+    try:
+        conn.execute("SELECT * FROM accounts").fetchall()
+    finally:
+        conn.close()

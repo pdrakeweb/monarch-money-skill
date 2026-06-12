@@ -24,6 +24,34 @@ class CacheUnavailable(Exception):
 MIN_SCHEMA_VERSION = 2
 
 
+# --------------------------------------------------------------------------- #
+# Family shared data dir
+#
+# The monarch-money family (monarch-money + personal-finance + investing) shares
+# ONE data dir: monarch-money writes monarch_cache.db and the namespaced
+# profile.json there, and consumers read/write the SAME dir. That dir is
+# monarch-money's own persistent dir — the data layer owns the location — so a
+# consumer must NOT resolve its OWN skill-named dir (resolve_data_dir("investing"
+# /...)), which monarch never writes. shared_data_dir() is the single place the
+# whole family agrees on. Resolution:
+#   $MONARCH_MONEY_FAMILY_DIR > $MONARCH_MONEY_DATA_DIR > ~/.claude-skills/monarch-money/
+# --------------------------------------------------------------------------- #
+FAMILY_SHARED_SKILL = "monarch-money"
+FAMILY_DATA_ENV = "MONARCH_MONEY_DATA_DIR"
+FAMILY_DIR_ENV = "MONARCH_MONEY_FAMILY_DIR"
+
+
+def shared_data_dir(skill_dir):
+    """The one dir the monarch-money family shares (monarch_cache.db + the
+    namespaced profile.json). Producer (monarch-money) and consumers
+    (personal-finance, investing) all resolve the SAME path from here. Pass the
+    caller's own SKILL_DIR (the .../<skill>/ dir, used only for the
+    skill-relative last-resort fallback)."""
+    from skill_common import resolve_shared_dir
+    return resolve_shared_dir(FAMILY_SHARED_SKILL, skill_dir,
+                              env_var=FAMILY_DATA_ENV, family_env=FAMILY_DIR_ENV)
+
+
 def cache_path(data_dir):
     return os.path.join(data_dir, "monarch_cache.db")
 

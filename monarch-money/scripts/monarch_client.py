@@ -29,8 +29,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # `git fetch skeleton && git merge skeleton/main`.
 from skill_cache import SkillCache                       # noqa: E402
 from skill_common import (                               # noqa: E402
-    SkillError, resolve_data_dir, bootstrap_data, load_dotenv,
+    SkillError, bootstrap_data, load_dotenv,
 )
+# Family contract: the cache + profile live in the family shared dir, not
+# monarch's own skill-named dir (so personal-finance / investing find them).
+from cache_contract import shared_data_dir               # noqa: E402
 # Per-skill schema + version (skill_schema.py is monarch's, not skeleton's).
 from skill_schema import SKILL_VERSION, SCHEMA, V2_DDL, V3_DDL   # noqa: E402,F401
 
@@ -555,11 +558,13 @@ def classify_error(exc):
 # Client
 # --------------------------------------------------------------------------- #
 _SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# Persistent across chat sessions: env override > /mnt/user-data (cloud) >
-# ~/.claude-skills (desktop) > skill-relative data/ (per-session fallback).
-# Skill-relative data/ dies with each session's container copy — field finding.
-DEFAULT_DATA_DIR = resolve_data_dir(
-    "monarch-money", _SKILL_DIR, env_var="MONARCH_MONEY_DATA_DIR")
+# The family SHARED dir — monarch-money owns the location, so this resolves to
+# monarch's own persistent dir by default ($MONARCH_MONEY_FAMILY_DIR >
+# $MONARCH_MONEY_DATA_DIR > /mnt/user-data/.claude-skills/monarch-money (cloud) >
+# ~/.claude-skills/monarch-money (desktop) > skill-relative data/). The cache +
+# profile.json land here so personal-finance / investing read the SAME files;
+# monarch's own auth (session/cookie/.env) rides along in the same dir.
+DEFAULT_DATA_DIR = shared_data_dir(_SKILL_DIR)
 # First-run bootstrap: auth files bundled via `build.ps1 -IncludeAuth` ride in
 # the package's data/bootstrap/ and are copied into the persistent dir once.
 bootstrap_data(DEFAULT_DATA_DIR, _SKILL_DIR)

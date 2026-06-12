@@ -772,9 +772,12 @@ NO_AUTH = {"net-worth", "status", "auth-status", "clear-cache", "version",
 # Durability backstop: the persistent data dir survives across sessions on
 # desktop, but on cloud (claude.ai/mobile) every new conversation is a FRESH
 # container — so the user's non-reproducible config (exclusions + corrected tax
-# buckets + profile.json) is effectively per-chat unless exported. These write
-# /restore one portable JSON artifact; synced Monarch data is excluded (re-sync
-# regenerates it). Mirrors the skeleton's config-export/import.
+# buckets + profile.json) is effectively per-chat unless exported. config-export
+# writes ONE human-readable **Markdown** file: the profile + config as
+# sections/tables with the machine-restorable bundle in a fenced ```json block
+# at the end. Drop it into a Claude Desktop Project's Files (every chat can read
+# it) — readable by a person AND re-importable by config-import. Synced Monarch
+# data is excluded (sync-all regenerates it). Mirrors the skeleton.
 CONFIG_BUNDLE_KIND = "config-export/v1"
 CONFIG_FILES = ["profile.json"]
 
@@ -798,6 +801,94 @@ def _config_bundle(cache, data_dir):
     }
 
 
+def _cfg_scalar(v):
+    if v is None:
+        return "—"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return str(v)
+
+
+def _cfg_md_lines(obj, depth=0):
+    pad = "  " * depth
+    out = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, (dict, list)) and v:
+                out.append(f"{pad}- **{k}:**")
+                out.extend(_cfg_md_lines(v, depth + 1))
+            else:
+                out.append(f"{pad}- **{k}:** {_cfg_scalar(v)}")
+    elif isinstance(obj, list):
+        for item in obj:
+            if isinstance(item, dict):
+                out.append(f"{pad}- " + ", ".join(
+                    f"{k}={_cfg_scalar(v)}" for k, v in item.items()))
+            else:
+                out.append(f"{pad}- {_cfg_scalar(item)}")
+    else:
+        out.append(f"{pad}- {_cfg_scalar(obj)}")
+    return out
+
+
+def _cfg_md_table(columns, rows):
+    out = ["| " + " | ".join(columns) + " |",
+           "|" + "|".join(["---"] * len(columns)) + "|"]
+    for r in rows:
+        out.append("| " + " | ".join(_cfg_scalar(c) for c in r) + " |")
+    return out
+
+
+def _render_config_markdown(bundle):
+    lines = [
+        "# monarch-money — financial config export",
+        f"*Exported {bundle['exported_at']} by the **monarch-money** skill "
+        f"(v{bundle['skill_version']}). Human-readable; the JSON block at the "
+        "end is the machine-restorable copy. To restore: save this file and run "
+        "`config-import --in <file>`, or attach it to the project's Files so a "
+        "new chat can read it and re-import.*", ""]
+    files = bundle.get("files") or {}
+    prof_text = files.get("profile.json")
+    if prof_text:
+        try:
+            prof = json.loads(prof_text)
+        except ValueError:
+            prof = None
+        if isinstance(prof, dict):
+            lines.append("## Profile")
+            if any(k in prof for k in ("identity", "finance", "retirement")):
+                for sec in ("identity", "finance", "retirement"):
+                    body = prof.get(sec) or {}
+                    if body:
+                        lines.append(f"### {sec.title()}")
+                        lines.extend(_cfg_md_lines(body))
+                        lines.append("")
+                if "profile_complete" in prof:
+                    lines.append(
+                        f"*profile_complete: {prof['profile_complete']}*\n")
+            else:
+                lines.extend(_cfg_md_lines(prof))
+                lines.append("")
+    cache = bundle.get("cache") or {}
+    for table, blob in (cache.get("config_tables") or {}).items():
+        lines.append(f"## {table}")
+        if blob.get("rows"):
+            lines.extend(_cfg_md_table(blob["columns"], blob["rows"]))
+        else:
+            lines.append("*(none)*")
+        lines.append("")
+    for table, blob in (cache.get("protected_rows") or {}).items():
+        lines.append(f"## {table} (user corrections)")
+        lines.extend(_cfg_md_table(blob["columns"], blob["rows"]))
+        lines.append("")
+    lines.append("## Machine-readable config")
+    lines.append("*Do not edit by hand — `config-import` parses this block.*\n")
+    lines.append("```json")
+    lines.append(json.dumps(bundle, indent=2))
+    lines.append("```")
+    return "\n".join(lines) + "\n"
+
+
 def render_config_export(cache, data_dir, out_path):
     from skill_common import resolve_outputs_dir
     bundle = _config_bundle(cache, data_dir)
@@ -805,27 +896,58 @@ def render_config_export(cache, data_dir, out_path):
         stamp = _dt.date.today().isoformat()
         out = resolve_outputs_dir()
         out_path = os.path.join(out or data_dir,
-                                f"monarch-money-config-{stamp}.json")
+                                f"monarch-money-config-{stamp}.md")
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as fh:
-        json.dump(bundle, fh, indent=2)
+        fh.write(_render_config_markdown(bundle))
     ct = bundle["cache"]["config_tables"]
     pr = bundle["cache"]["protected_rows"]
+    has_profile = "profile.json" in (bundle.get("files") or {})
     print("## Config Export\n")
-    print(f"Saved non-reproducible config to **{out_path}**.\n")
+    print(f"Saved a readable config profile to **{out_path}**.\n")
     for table, blob in ct.items():
         print(f"- `{table}`: {len(blob['rows'])} row(s)")
     for table, blob in pr.items():
         print(f"- `{table}` (user corrections): {len(blob['rows'])} row(s)")
-    for fname in bundle["files"]:
-        print(f"- file: `{fname}`")
-    if not ct and not pr and not bundle["files"]:
+    if has_profile:
+        print("- profile.json (rendered as sections + in the JSON block)")
+    if not ct and not pr and not has_profile:
         print("> Nothing to export yet — no exclusions, tax-bucket "
               "corrections, or profile.")
-    print("\n**Keep this file.** On claude.ai/mobile a new chat starts with an "
-          "empty container — re-import with `config-import --in <file>` to "
-          "restore exclusions / tax-bucket corrections / profile. (Synced "
-          "Monarch data is excluded; `sync-all` regenerates it.)")
+    print("\n**Keep this file.** It's human-readable AND machine-restorable. On "
+          "claude.ai/mobile a new chat starts with an empty container — attach "
+          "it to the project's **Files** so every chat can read it, and run "
+          "`config-import --in <file>` to restore. (Synced Monarch data is "
+          "excluded; `sync-all` regenerates it.)")
+
+
+def _restore_config_file(data_dir, fname, text):
+    path = os.path.join(data_dir, fname)
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print(f"- file `{fname}`: restored")
+    else:
+        with open(path + ".imported", "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print(f"- file `{fname}`: already present → wrote "
+              f"`{fname}.imported` (reconcile manually)")
+
+
+def _extract_config_bundle(text):
+    """Pull the bundle from a config-export file: raw JSON, or the last fenced
+    ```json block in the Markdown artifact."""
+    if text.lstrip().startswith("{"):
+        return json.loads(text)
+    marker = "```json"
+    i = text.rfind(marker)
+    if i == -1:
+        raise MonarchSkillError("no ```json config block found in the file.")
+    start = i + len(marker)
+    end = text.find("```", start)
+    if end == -1:
+        raise MonarchSkillError("unterminated ```json block in the file.")
+    return json.loads(text[start:end])
 
 
 def render_config_import(cache, data_dir, in_path):
@@ -833,29 +955,20 @@ def render_config_import(cache, data_dir, in_path):
         raise MonarchSkillError(f"--in file not found: {in_path}")
     try:
         with open(in_path, encoding="utf-8") as fh:
-            bundle = json.load(fh)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise MonarchSkillError(f"cannot read config bundle: {exc}")
+            bundle = _extract_config_bundle(fh.read())
+    except (OSError, ValueError) as exc:
+        raise MonarchSkillError(f"cannot read config export: {exc}")
     if bundle.get("kind") != CONFIG_BUNDLE_KIND:
-        raise MonarchSkillError(f"not a {CONFIG_BUNDLE_KIND} bundle.")
+        raise MonarchSkillError(f"not a {CONFIG_BUNDLE_KIND} export.")
     counts = cache.import_config(bundle.get("cache") or {})
     print("## Config Import\n")
     for table, n in (counts or {}).items():
         print(f"- `{table}`: {n} row(s) restored")
     if not counts:
-        print("- (no config-table rows in bundle)")
+        print("- (no config-table rows in export)")
     os.makedirs(data_dir, exist_ok=True)
     for fname, text in (bundle.get("files") or {}).items():
-        path = os.path.join(data_dir, fname)
-        if not os.path.exists(path):
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(text)
-            print(f"- file `{fname}`: restored")
-        else:
-            with open(path + ".imported", "w", encoding="utf-8") as fh:
-                fh.write(text)
-            print(f"- file `{fname}`: already present → wrote "
-                  f"`{fname}.imported` (reconcile manually)")
+        _restore_config_file(data_dir, fname, text)
     print("\nConfig restored. Synced Monarch data is NOT in the bundle — run "
           "`sync-all` to repopulate it.")
 

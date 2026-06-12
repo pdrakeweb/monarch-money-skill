@@ -10,9 +10,31 @@ installed; each skill degrades gracefully and names what's missing.
 Copy this file and the two modules (`profile.py`, `cache_contract.py`) verbatim
 into each repo's `scripts/`. Improve them HERE, then re-copy — do not fork.
 
+## 0. Where the shared data lives
+
+`monarch_cache.db` and the namespaced `profile.json` live in ONE **family
+shared dir** that every member resolves identically — **monarch-money's own
+persistent data dir**. A consumer must NOT use its own
+`resolve_data_dir("<own-skill>")`: that dir is empty because monarch-money
+never writes there. Resolve the shared dir through the cache contract:
+
+```python
+from cache_contract import shared_data_dir
+data_dir = shared_data_dir(SKILL_DIR)   # identical path for producer + consumers
+```
+
+Order: `$MONARCH_MONEY_FAMILY_DIR` (relocate the whole family) >
+`$MONARCH_MONEY_DATA_DIR` (monarch-money's own override) >
+`~/.claude-skills/monarch-money/` (desktop) or
+`/mnt/user-data/.claude-skills/monarch-money/` (cloud). `config-export` reads
+`profile.json` from this dir, so the family shares ONE exported profile — not
+one per skill. Each skill still keeps its OWN private store (the CFC, the goals
+ledger, the skill's SkillCache) under its own `resolve_data_dir`; only the
+cache and the profile are shared.
+
 ## 1. Cache contract (owner: monarch-money)
 
-- SQLite `monarch_cache.db` in the skeleton's persistent data dir. Tables:
+- SQLite `monarch_cache.db` in the family shared dir (§0). Tables:
   `accounts`, `account_tax_buckets`, `holdings`, `transactions`, `budgets`,
   `cashflow`, `recurring`, `net_worth_history`, `account_history`, plus `meta`.
 - `meta.schema_version` records the cache version. **Consumers open read-only

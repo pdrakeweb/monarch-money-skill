@@ -134,6 +134,31 @@ def resolve_data_dir(skill_name, skill_dir, env_var=None):
     return tempfile.gettempdir()
 
 
+def resolve_shared_dir(shared_skill_name, skill_dir, env_var=None,
+                       family_env=None):
+    """Resolve a data dir SHARED across a FAMILY of skills, so consumers read
+    the producer's artifacts instead of their own (empty) skill-named dir.
+
+    Some skills compose around one data layer: a producer writes a cache (and a
+    shared config file such as profile.json) that sibling skills consume. Those
+    artifacts must live in ONE directory every member agrees on — NOT each
+    skill's own resolve_data_dir(<own_name>), or a consumer looks where the
+    producer never wrote. This returns the producer's OWN persistent dir
+    (resolve_data_dir(shared_skill_name, ...)), a path every member can name.
+
+    Resolution order, most-explicit first:
+      1. $<family_env>  — relocate the whole family at once (optional)
+      2. the producer's own dir: resolve_data_dir(shared_skill_name, env_var)
+         — so the family also follows the producer's own override.
+    """
+    if family_env:
+        override = os.environ.get(family_env)
+        if override:
+            os.makedirs(override, exist_ok=True)
+            return override
+    return resolve_data_dir(shared_skill_name, skill_dir, env_var=env_var)
+
+
 def resolve_outputs_dir():
     """Directory for user-DOWNLOADABLE artifacts (e.g. a config export the user
     keeps so it survives a fresh cloud container or homedir wipe). Cloud
