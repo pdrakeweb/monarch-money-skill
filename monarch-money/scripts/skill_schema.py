@@ -6,7 +6,7 @@ diverges from claude-skill-skeleton by design.
 
 # Bump on EVERY commit that changes this skill (see CLAUDE.md). Must match
 # the `version:` in SKILL.md frontmatter — builds refuse on mismatch.
-SKILL_VERSION = "1.1.0"
+SKILL_VERSION = "1.2.0"
 
 TTL_4H = 4 * 3600
 TTL_24H = 24 * 3600
@@ -171,6 +171,13 @@ SCHEMA = {
         "account_tax_buckets": {"ttl": None,
                                 "protect_where": "auto_classified = 0"},
     },
+
+    # Non-reproducible user config captured by `config-export` (the durability
+    # backstop). `exclusions` lives entirely outside the TTL cache; the
+    # user-corrected tax-bucket rows are also exported automatically via the
+    # account_tax_buckets protect_where above. All other cache data is
+    # reproducible by re-syncing Monarch, so it is NOT exported.
+    "config_tables": ["exclusions"],
 
     "clear_meta_keys": ["last_full_sync", "last_tx_sync"],
 }

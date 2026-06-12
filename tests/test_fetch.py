@@ -32,6 +32,51 @@ def test_accounts_output_contains_table(capsys, db):
     assert "| Checking |" in out
 
 
+def test_config_export_import_preserves_user_config(capsys, db, tmp_path):
+    # seed an exclusion + a user tax-bucket correction, export, wipe, import
+    c = MonarchCache(db)
+    c.add_exclusion("category", "Dental", reason="braces")
+    c._conn.execute(
+        "INSERT OR REPLACE INTO account_tax_buckets "
+        "(account_id, tax_bucket, auto_classified, subtype_source) "
+        "VALUES ('acc9','roth',0,'user')")          # auto_classified=0 → protected
+    c._conn.execute(
+        "INSERT OR REPLACE INTO account_tax_buckets "
+        "(account_id, tax_bucket, auto_classified, subtype_source) "
+        "VALUES ('acc8','traditional',1,'auto')")   # auto → NOT exported
+    c._conn.commit()
+    c.close()
+    out_file = str(tmp_path / "mm-config.json")
+    code, _ = _run(capsys, ["config-export", "--db", db, "--out", out_file])
+    assert code == 0 and os.path.exists(out_file)
+
+    # simulate a fresh cloud container
+    c = MonarchCache(db)
+    c._conn.execute("DELETE FROM exclusions")
+    c._conn.execute("DELETE FROM account_tax_buckets")
+    c._conn.commit()
+    c.close()
+
+    code, out = _run(capsys, ["config-import", "--db", db, "--in", out_file])
+    assert code == 0 and "Config Import" in out
+    c = MonarchCache(db)
+    try:
+        assert [e["value"] for e in c.list_exclusions()] == ["Dental"]
+        buckets = c._conn.execute(
+            "SELECT account_id, auto_classified FROM account_tax_buckets"
+        ).fetchall()
+        assert buckets == [("acc9", 0)]          # only the user correction
+    finally:
+        c.close()
+
+
+def test_config_import_rejects_foreign_bundle(capsys, db, tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"kind":"nope"}', encoding="utf-8")
+    code, out = _run(capsys, ["config-import", "--db", db, "--in", str(bad)])
+    assert code == 1 and "config-export/v1" in out
+
+
 def test_accounts_net_worth_excludes_hidden(capsys, db, tmp_path):
     # Build a modified fixtures dir with a large hidden account added.
     fx = tmp_path / "fx"

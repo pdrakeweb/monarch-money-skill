@@ -1,6 +1,6 @@
 ---
 name: "monarch-money"
-version: "1.1.0"
+version: "1.2.0"
 description: >
   Connect to and sync the user's Monarch Money account into a local cache:
   authentication/login, accounts and balances, investment holdings,
@@ -130,6 +130,16 @@ For cross-chat/cross-device zero-touch auth, a `.env` with `MONARCH_COOKIES`
 `references/persistence.md`. Do NOT just ask them to re-auth without
 explaining whether it will persist.
 
+The **same cloud reset hits user config** the API can't regenerate —
+exclusions and tax-bucket corrections (and the shared `profile.json`). Synced
+Monarch data is reproducible (`sync-all` re-pulls it), but those are not.
+**Whenever a session added/changed an exclusion or a tax-bucket correction, run
+`python scripts/fetch.py config-export` before wrapping up** and give the user
+the file path; they re-import it in a new chat / on a new device with
+`config-import --in <file>`. On Claude Code a `Stop` hook can automate it (see
+the skeleton's `hooks/stop-config-export.md`). If exclusions/corrections are
+unexpectedly empty at session start, ask whether they have a prior export.
+
 ## 1. Decision tree
 
 ```
@@ -258,6 +268,8 @@ integration or another tool.
 | `status` | Cache row counts, ages, lifetime API calls | — |
 | `auth-status` | Session age + expiry estimate | — |
 | `clear-cache` | Empty the local cache; next sync re-pulls and re-infers tax buckets (exclusions survive) | `--include-user-buckets` |
+| `config-export` | Export non-reproducible config (exclusions + tax-bucket corrections + profile) to a portable JSON artifact (durability backstop — see §0) | `--out PATH` |
+| `config-import` | Restore a config-export bundle into this session | `--in PATH` |
 | `version` | Print the installed skill version | — |
 
 Exclusions are managed by a separate offline CLI —

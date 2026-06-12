@@ -169,6 +169,69 @@ class SkillCache:
         counts["protected_rows_kept"] = kept_total
         return counts
 
+    # ---- config export / import ------------------------------------------ #
+    # Non-reproducible config = the user-entered data the upstream API can NOT
+    # regenerate. It lives in two places: tables listed in SCHEMA["config_tables"]
+    # (kept entirely out of the TTL cache, e.g. exclusions / goals), and the
+    # protect_where rows of regular cache tables (e.g. user tax-bucket
+    # corrections). export_config() captures BOTH into a portable dict so a
+    # session can hand the user a durable artifact; import_config() restores it
+    # — the durability backstop for the cloud "every new chat is a fresh
+    # container" reset (and for homedir wipes / new machines).
+    def _table_columns(self, table):
+        return [r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")]
+
+    def export_config(self):
+        """Return {config_tables: {t: {columns, rows}}, protected_rows:
+        {t: {columns, where, rows}}} — everything non-reproducible this cache
+        holds. Reproducible cache rows are deliberately excluded."""
+        out = {"config_tables": {}, "protected_rows": {}}
+        for table in self.schema.get("config_tables", []):
+            try:
+                cols = self._table_columns(table)
+                rows = self._conn.execute(f"SELECT * FROM {table}").fetchall()
+            except sqlite3.OperationalError:
+                continue
+            out["config_tables"][table] = {
+                "columns": cols, "rows": [list(r) for r in rows]}
+        for table, spec in self.schema["tables"].items():
+            protect = (spec or {}).get("protect_where")
+            if not protect:
+                continue
+            try:
+                cols = self._table_columns(table)
+                rows = self._conn.execute(
+                    f"SELECT * FROM {table} WHERE {protect}").fetchall()
+            except sqlite3.OperationalError:
+                continue
+            if rows:
+                out["protected_rows"][table] = {
+                    "columns": cols, "where": protect,
+                    "rows": [list(r) for r in rows]}
+        return out
+
+    def import_config(self, bundle):
+        """Restore an export_config() bundle (INSERT OR REPLACE — idempotent;
+        existing rows with the same key/id or unique constraint are overwritten
+        by the imported copy). Returns {table: rows_restored}."""
+        counts = {}
+        for section in ("config_tables", "protected_rows"):
+            for table, blob in (bundle.get(section) or {}).items():
+                cols = blob.get("columns") or []
+                if not cols:
+                    continue
+                collist = ",".join(cols)
+                placeholders = ",".join("?" * len(cols))
+                n = 0
+                for row in blob.get("rows", []):
+                    self._conn.execute(
+                        f"INSERT OR REPLACE INTO {table} ({collist}) "
+                        f"VALUES ({placeholders})", list(row))
+                    n += 1
+                counts[table] = counts.get(table, 0) + n
+        self._conn.commit()
+        return counts
+
     # ---- prune ------------------------------------------------------------ #
     def prune_stale(self):
         """Delete rows older than 2x their table TTL (safety margin).

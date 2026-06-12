@@ -766,7 +766,98 @@ class Ctx:
 
 
 NO_AUTH = {"net-worth", "status", "auth-status", "clear-cache", "version",
-           "report", "dashboard", "reports", "profile"}
+           "report", "dashboard", "reports", "profile",
+           "config-export", "config-import"}
+
+# Durability backstop: the persistent data dir survives across sessions on
+# desktop, but on cloud (claude.ai/mobile) every new conversation is a FRESH
+# container — so the user's non-reproducible config (exclusions + corrected tax
+# buckets + profile.json) is effectively per-chat unless exported. These write
+# /restore one portable JSON artifact; synced Monarch data is excluded (re-sync
+# regenerates it). Mirrors the skeleton's config-export/import.
+CONFIG_BUNDLE_KIND = "config-export/v1"
+CONFIG_FILES = ["profile.json"]
+
+
+def _config_bundle(cache, data_dir):
+    files = {}
+    for fname in CONFIG_FILES:
+        path = os.path.join(data_dir, fname)
+        if os.path.exists(path):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    files[fname] = fh.read()
+            except OSError:
+                pass
+    return {
+        "kind": CONFIG_BUNDLE_KIND, "skill": "monarch-money",
+        "skill_version": SKILL_VERSION,
+        "schema_version": cache.get_meta("schema_version"),
+        "exported_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        "cache": cache.export_config(), "files": files,
+    }
+
+
+def render_config_export(cache, data_dir, out_path):
+    from skill_common import resolve_outputs_dir
+    bundle = _config_bundle(cache, data_dir)
+    if not out_path:
+        stamp = _dt.date.today().isoformat()
+        out = resolve_outputs_dir()
+        out_path = os.path.join(out or data_dir,
+                                f"monarch-money-config-{stamp}.json")
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump(bundle, fh, indent=2)
+    ct = bundle["cache"]["config_tables"]
+    pr = bundle["cache"]["protected_rows"]
+    print("## Config Export\n")
+    print(f"Saved non-reproducible config to **{out_path}**.\n")
+    for table, blob in ct.items():
+        print(f"- `{table}`: {len(blob['rows'])} row(s)")
+    for table, blob in pr.items():
+        print(f"- `{table}` (user corrections): {len(blob['rows'])} row(s)")
+    for fname in bundle["files"]:
+        print(f"- file: `{fname}`")
+    if not ct and not pr and not bundle["files"]:
+        print("> Nothing to export yet — no exclusions, tax-bucket "
+              "corrections, or profile.")
+    print("\n**Keep this file.** On claude.ai/mobile a new chat starts with an "
+          "empty container — re-import with `config-import --in <file>` to "
+          "restore exclusions / tax-bucket corrections / profile. (Synced "
+          "Monarch data is excluded; `sync-all` regenerates it.)")
+
+
+def render_config_import(cache, data_dir, in_path):
+    if not in_path or not os.path.exists(in_path):
+        raise MonarchSkillError(f"--in file not found: {in_path}")
+    try:
+        with open(in_path, encoding="utf-8") as fh:
+            bundle = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise MonarchSkillError(f"cannot read config bundle: {exc}")
+    if bundle.get("kind") != CONFIG_BUNDLE_KIND:
+        raise MonarchSkillError(f"not a {CONFIG_BUNDLE_KIND} bundle.")
+    counts = cache.import_config(bundle.get("cache") or {})
+    print("## Config Import\n")
+    for table, n in (counts or {}).items():
+        print(f"- `{table}`: {n} row(s) restored")
+    if not counts:
+        print("- (no config-table rows in bundle)")
+    os.makedirs(data_dir, exist_ok=True)
+    for fname, text in (bundle.get("files") or {}).items():
+        path = os.path.join(data_dir, fname)
+        if not os.path.exists(path):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            print(f"- file `{fname}`: restored")
+        else:
+            with open(path + ".imported", "w", encoding="utf-8") as fh:
+                fh.write(text)
+            print(f"- file `{fname}`: already present → wrote "
+                  f"`{fname}.imported` (reconcile manually)")
+    print("\nConfig restored. Synced Monarch data is NOT in the bundle — run "
+          "`sync-all` to repopulate it.")
 
 
 def dispatch(args, cache, client):
@@ -828,6 +919,12 @@ def dispatch(args, cache, client):
             print("  (user corrections wiped — --include-user-buckets)")
         print("\nNext sync re-pulls everything and re-infers tax buckets "
               "with current classifier logic.")
+    elif cmd == "config-export":
+        render_config_export(
+            cache, os.path.dirname(os.path.abspath(args.db)), args.out)
+    elif cmd == "config-import":
+        render_config_import(
+            cache, os.path.dirname(os.path.abspath(args.db)), args.in_path)
     else:
         raise SystemExit(f"unknown command: {cmd}")
     return 0
@@ -914,6 +1011,15 @@ def build_parser():
     cc.add_argument("--include-user-buckets", action="store_true",
                     help="Also wipe user-corrected tax buckets "
                          "(auto_classified=0). Default keeps them.")
+    ce = sub.add_parser("config-export", parents=[common],
+                        help="Export non-reproducible config (exclusions + "
+                             "tax-bucket corrections + profile) to a portable "
+                             "JSON artifact (durability backstop).")
+    ce.add_argument("--out", help="Output path (default: outputs dir).")
+    ci = sub.add_parser("config-import", parents=[common],
+                        help="Restore a config-export bundle into this session.")
+    ci.add_argument("--in", dest="in_path", required=True,
+                    help="Path to a config-export JSON file.")
     sub.add_parser("version", parents=[common])
     # Moved out in v1.0.0 — kept as stubs that redirect to the consumer skills.
     rp = sub.add_parser("report", parents=[common])

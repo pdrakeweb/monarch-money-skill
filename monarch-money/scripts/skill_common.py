@@ -134,6 +134,26 @@ def resolve_data_dir(skill_name, skill_dir, env_var=None):
     return tempfile.gettempdir()
 
 
+def resolve_outputs_dir():
+    """Directory for user-DOWNLOADABLE artifacts (e.g. a config export the user
+    keeps so it survives a fresh cloud container or homedir wipe). Cloud
+    containers surface /mnt/user-data/outputs as the user's download area;
+    return it when writable, else None so the caller falls back to the data
+    dir. (Ported from claude-skill-skeleton.)"""
+    cand = os.path.join("/mnt", "user-data", "outputs")
+    try:
+        if os.path.isdir(os.path.dirname(cand)):
+            os.makedirs(cand, exist_ok=True)
+            probe = os.path.join(cand, ".write_probe")
+            with open(probe, "w") as fh:
+                fh.write("ok")
+            os.remove(probe)
+            return cand
+    except OSError:
+        pass
+    return None
+
+
 def data_dir_persistence(path):
     """Classify how durable a data directory is, so the skill can tell the
     user whether saved auth/cache will survive. Returns (kind, explanation).
