@@ -1,6 +1,6 @@
 ---
 name: "monarch-money"
-version: "1.4.0"
+version: "1.4.1"
 description: >
   Connect to and sync the user's Monarch Money account into a local cache:
   authentication/login, accounts and balances, investment holdings,

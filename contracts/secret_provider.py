@@ -24,10 +24,12 @@ STORE_FILENAME = "secrets.json"
 
 
 def _candidate_dirs():
-    out = []
+    # $CLAUDE_SECRETS_DIR is AUTHORITATIVE — when set it is the only location
+    # (so an explicit override fully isolates; nothing else is consulted).
     override = os.environ.get("CLAUDE_SECRETS_DIR")
     if override:
-        out.append(override)
+        return [override]
+    out = []
     if os.path.isdir("/mnt/user-data"):
         out.append(os.path.join("/mnt", "user-data", ".claude-skills", "_secrets"))
     home = os.path.expanduser("~")
