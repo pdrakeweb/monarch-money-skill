@@ -329,3 +329,40 @@ def test_ensure_authenticated_falls_back_to_legacy_cookie_file(tmp_path):
         assert client.mm._headers["X-Csrftoken"] == "c1"
     finally:
         client.cache.close()
+
+
+# ---- claude-secrets vault fallback (from_vault) --------------------------- #
+def _write_vault(tmp_path, monkeypatch, value="session_id=abc; csrftoken=xyz"):
+    store = tmp_path / "_secrets"
+    store.mkdir()
+    (store / "secrets.json").write_text(
+        json.dumps({"secrets": {"monarch_cookies": {"value": value}}}),
+        encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_SECRETS_DIR", str(store))
+
+
+def test_from_vault_adopts_cookie_secret(tmp_path, monkeypatch):
+    from monarch_client import MonarchClient
+    _write_vault(tmp_path, monkeypatch)
+    client = MonarchClient.from_vault(
+        cache_path=str(tmp_path / "c.db"),
+        session_path=str(tmp_path / "s.pickle"))
+    assert client is not None and client.cache is not None
+
+
+def test_from_vault_absent_raises(tmp_path, monkeypatch):
+    from monarch_client import MonarchClient
+    monkeypatch.setenv("CLAUDE_SECRETS_DIR", str(tmp_path / "nope"))
+    with pytest.raises(AuthExpiredError):
+        MonarchClient.from_vault(
+            cache_path=str(tmp_path / "c.db"),
+            session_path=str(tmp_path / "s.pickle"))
+
+
+def test_secret_provider_reads_vault(tmp_path, monkeypatch):
+    import secret_provider as sp
+    _write_vault(tmp_path, monkeypatch, value="session_id=zzz; csrftoken=qqq")
+    assert sp.vault_available() is True
+    assert sp.get_secret("monarch_cookies") == "session_id=zzz; csrftoken=qqq"
+    assert sp.secret_names() == ["monarch_cookies"]
+    assert sp.get_secret("nope") is None

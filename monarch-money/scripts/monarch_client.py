@@ -897,14 +897,44 @@ class MonarchClient:
         return cls(mm, MonarchCache(cache_path))
 
     @classmethod
+    def from_vault(cls, cache_path=DEFAULT_DB_PATH,
+                   session_path=DEFAULT_SESSION_PATH):
+        """Authenticate from the **claude-secrets** vault, if installed. Reads
+        the `monarch_cookies` secret IN-PROCESS via the shared secret_provider
+        contract (never printed) and adopts it as a cookie session. This lets
+        the credential live centrally in one vault instead of being bundled into
+        this skill — monarch consults the vault as a fallback."""
+        try:
+            from secret_provider import get_secret
+        except ImportError:
+            raise AuthExpiredError("secret_provider not vendored.")
+        cookies = get_secret("monarch_cookies")
+        if not cookies:
+            raise AuthExpiredError("No monarch_cookies in the secrets vault.")
+        from monarchmoney import MonarchMoney
+        pairs = {}
+        for part in cookies.split(";"):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                pairs[k.strip()] = v.strip()
+        session_id = pairs.get("session_id", pairs.get("sessionid"))
+        csrftoken = pairs.get("csrftoken")
+        if not (session_id and csrftoken):
+            raise AuthExpiredError(
+                "vault monarch_cookies missing session_id/csrftoken.")
+        mm = MonarchMoney(session_file=session_path)
+        apply_cookie_auth(mm, csrftoken, session_id)
+        return cls(mm, MonarchCache(cache_path))
+
+    @classmethod
     def ensure_authenticated(cls, session_path=DEFAULT_SESSION_PATH,
                              cred_path=DEFAULT_CRED_PATH,
                              cache_path=DEFAULT_DB_PATH,
                              cookie_path=DEFAULT_COOKIE_PATH,
                              env_path=DEFAULT_ENV_PATH):
         """Try a saved token session, then a saved cookie session, then
-        persisted credentials, then the .env file; else raise
-        AuthExpiredError. Never retries a dead session."""
+        persisted credentials, then the .env file, then the claude-secrets
+        vault; else raise AuthExpiredError. Never retries a dead session."""
         try:
             return cls.from_session(session_path, cache_path)
         except MonarchSkillError:
@@ -919,9 +949,14 @@ class MonarchClient:
             return cls.from_env(env_path, cache_path, session_path)
         except MonarchSkillError:
             pass
+        try:
+            return cls.from_vault(cache_path, session_path)
+        except MonarchSkillError:
+            pass
         raise AuthExpiredError(
             "Monarch session expired. Re-run: python scripts/setup_auth.py "
             "--email ... --mfa-code CODE (or --token / --csrf-token + "
-            "--session-id), or put MONARCH_COOKIES in "
-            f"{env_path} for zero-touch reauth."
+            "--session-id), put MONARCH_COOKIES in "
+            f"{env_path} for zero-touch reauth, or install the **claude-secrets** "
+            "vault with a `monarch_cookies` secret."
         )
