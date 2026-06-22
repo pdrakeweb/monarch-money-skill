@@ -899,7 +899,7 @@ class MonarchClient:
     @classmethod
     def from_vault(cls, cache_path=DEFAULT_DB_PATH,
                    session_path=DEFAULT_SESSION_PATH):
-        """Authenticate from the **claude-secrets** vault, if installed. Reads
+        """Authenticate from the **secrets** vault, if installed. Reads
         the `monarch_cookies` secret IN-PROCESS via the shared secret_provider
         contract (never printed) and adopts it as a cookie session. This lets
         the credential live centrally in one vault instead of being bundled into
@@ -933,7 +933,7 @@ class MonarchClient:
                              cookie_path=DEFAULT_COOKIE_PATH,
                              env_path=DEFAULT_ENV_PATH):
         """Try a saved token session, then a saved cookie session, then
-        persisted credentials, then the .env file, then the claude-secrets
+        persisted credentials, then the .env file, then the secrets
         vault; else raise AuthExpiredError. Never retries a dead session."""
         try:
             return cls.from_session(session_path, cache_path)
@@ -957,6 +957,6 @@ class MonarchClient:
             "Monarch session expired. Re-run: python scripts/setup_auth.py "
             "--email ... --mfa-code CODE (or --token / --csrf-token + "
             "--session-id), put MONARCH_COOKIES in "
-            f"{env_path} for zero-touch reauth, or install the **claude-secrets** "
+            f"{env_path} for zero-touch reauth, or install the **secrets** "
             "vault with a `monarch_cookies` secret."
         )

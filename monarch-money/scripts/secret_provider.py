@@ -1,5 +1,5 @@
 """
-secret_provider.py — SHARED CONTRACT: read secrets from the claude-secrets vault.
+secret_provider.py — SHARED CONTRACT: read secrets from the secrets vault.
 
 Vendor this file VERBATIM into any skill that needs secrets (like cache_contract
 .py / profile.py). It is **read-only**: it returns a secret by name from the
@@ -7,7 +7,7 @@ shared vault store, or None when the vault isn't installed/published or the
 secret is absent. It NEVER prints values — callers use the returned value
 in-process (e.g. to authenticate) and must not echo it.
 
-The vault skill (`claude-secrets`) owns WRITING the store; consumers only read.
+The vault skill (`secrets`) owns WRITING the store; consumers only read.
 Both resolve the same shared location so a consumer finds what the vault wrote:
     $CLAUDE_SECRETS_DIR  >  /mnt/user-data/.claude-skills/_secrets/  (cloud)
                          >  ~/.claude-skills/_secrets/               (desktop)
@@ -35,7 +35,7 @@ def _candidate_dirs():
     home = os.path.expanduser("~")
     if home and home != "~":
         out.append(os.path.join(home, ".claude-skills", "_secrets"))
-    out.append(os.path.join(os.getcwd(), ".claude-secrets"))
+    out.append(os.path.join(os.getcwd(), ".secrets"))
     return out
 
 

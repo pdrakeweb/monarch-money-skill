@@ -301,7 +301,7 @@ def test_ensure_authenticated_falls_back_to_env_cookies(tmp_path):
 
 def test_ensure_authenticated_no_auth_raises(tmp_path, monkeypatch):
     from monarch_client import MonarchClient
-    # Isolate the claude-secrets vault fallback too: point it at an empty dir so
+    # Isolate the secrets vault fallback too: point it at an empty dir so
     # a real published vault on the dev machine can't satisfy auth here.
     monkeypatch.setenv("CLAUDE_SECRETS_DIR", str(tmp_path / "novault"))
     with pytest.raises(AuthExpiredError):
@@ -334,7 +334,7 @@ def test_ensure_authenticated_falls_back_to_legacy_cookie_file(tmp_path):
         client.cache.close()
 
 
-# ---- claude-secrets vault fallback (from_vault) --------------------------- #
+# ---- secrets vault fallback (from_vault) --------------------------- #
 def _write_vault(tmp_path, monkeypatch, value="session_id=abc; csrftoken=xyz"):
     store = tmp_path / "_secrets"
     store.mkdir()

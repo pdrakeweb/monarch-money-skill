@@ -1,6 +1,6 @@
 ---
 name: "monarch-money"
-version: "1.4.1"
+version: "1.4.2"
 description: >
   Connect to and sync the user's Monarch Money account into a local cache:
   authentication/login, accounts and balances, investment holdings,
@@ -130,8 +130,8 @@ For cross-chat/cross-device zero-touch auth, a `.env` with `MONARCH_COOKIES`
 `references/persistence.md`. Do NOT just ask them to re-auth without
 explaining whether it will persist.
 
-**Centralized alternative — the claude-secrets vault.** `ensure_authenticated`
-also falls back to the **claude-secrets** vault: if it's installed and holds a
+**Centralized alternative — the secrets vault.** `ensure_authenticated`
+also falls back to the **secrets** vault: if it's installed and holds a
 `monarch_cookies` secret, monarch reads it in-process (via the shared
 `secret_provider` contract — never printed) and authenticates. This lets the
 credential live in ONE vault instead of being bundled into this skill, so you
