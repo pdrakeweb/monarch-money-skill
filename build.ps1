@@ -3,7 +3,7 @@
     Package the skill into <skill-name>.zip (claude.ai upload format).
 
 .DESCRIPTION
-    SHARED SKELETON FILE — generic on purpose; it auto-discovers the single
+    SHARED SKELETON FILE - generic on purpose; it auto-discovers the single
     SKILL.md-bearing directory, so it needs no per-skill edits and skeleton
     updates merge cleanly.
 
@@ -18,7 +18,7 @@
     OPT-IN: bundle auth material (session.pickle, credentials.json,
     cookie_session.json, .env) into data/bootstrap/ inside the zip, sourced
     from the persistent data dir (~\.claude-skills\<name>\) or the repo's
-    data\. New sessions on ANY device bootstrap auth from these files — the
+    data\. New sessions on ANY device bootstrap auth from these files - the
     package (including the secrets) is uploaded to claude.ai, so only use
     this when cross-device auth is worth that trade-off.
 #>
@@ -134,7 +134,7 @@ if ($IncludeAuth) {
         Write-Error "-IncludeAuth set but no auth files found in: $($sources -join '; ')"
         exit 1
     }
-    Write-Host "⚠ AUTH BUNDLED into the zip: $($bundled -join ', ')" -ForegroundColor Yellow
+    Write-Host "! AUTH BUNDLED into the zip: $($bundled -join ', ')" -ForegroundColor Yellow
     Write-Host "  These secrets ship inside the package (uploaded to claude.ai)." -ForegroundColor Yellow
     Write-Host "  New sessions on any device will bootstrap auth from them." -ForegroundColor Yellow
 }
