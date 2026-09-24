@@ -6,7 +6,7 @@ diverges from claude-skill-skeleton by design.
 
 # Bump on EVERY commit that changes this skill (see CLAUDE.md). Must match
 # the `version:` in SKILL.md frontmatter — builds refuse on mismatch.
-SKILL_VERSION = "1.4.3"
+SKILL_VERSION = "1.5.0"
 
 TTL_4H = 4 * 3600
 TTL_24H = 24 * 3600

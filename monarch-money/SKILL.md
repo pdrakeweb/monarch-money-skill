@@ -1,6 +1,6 @@
 ---
 name: "monarch-money"
-version: "1.4.3"
+version: "1.5.0"
 description: >
   Connect to and sync the user's Monarch Money account into a local cache:
   authentication/login, accounts and balances, investment holdings,
@@ -418,6 +418,50 @@ temp-dir copy (analysis still works; it just won't persist).
     Monarch UI. Say so in the confirmation question.
   - Correcting the local `account_tax_buckets` table (§5) needs no
     confirmation: that's the skill's own cache, not Monarch.
+  - Raw `client.mm.gql_call(...)` with a **mutation** document is gated too
+    (`allow('gql_call')`); queries pass freely. Prefer the named methods
+    below: they validate input and check the error payload.
+  - `upload_receipt_to_inbox` (present in newer library forks) is gated.
+
+### Extra write methods (skill-implemented, all confirmation-gated)
+
+The library doesn't wrap these; `scripts/monarch_writes.py` implements them
+as direct GraphQL. Call them on `client.mm` like library methods (async, so
+`asyncio.run(...)`), each inside its own `with client.mm.allow("<name>"):`
+after the user confirmed that exact action. Every write has a
+`monarch_writes.build_<name>(...)` twin that returns the request WITHOUT
+sending it. Use it to show the user exactly what will be sent before asking.
+Failure raises `MonarchWriteError` with Monarch's message.
+
+- **Transaction rules**: `create_transaction_rule(merchant_criteria=[{"operator":
+  "contains"|"eq", "value": ...}], amount_criteria={"operator": "gt"|"eq"|"between",
+  "isExpense": bool, "value": x | "valueRange": {"lower","upper"}},
+  set_category_action="<category id from get_transaction_categories()>", ...)`
+  → rule id; `update_transaction_rule(rule_id, **changes)`;
+  `delete_transaction_rule(rule_id)`. Read with `get_transaction_rules()`
+  (ungated). `apply_to_existing_transactions` defaults **False**. It rewrites
+  past transactions, so only pass `True` when the user explicitly asked for
+  retroactive application, and say so in the confirmation. Updates re-send
+  the rule's full current state with your changes applied. A rule that uses
+  features the skill can't round-trip (splits, goals, owners, …) is refused;
+  send the user to the Monarch app. There is deliberately **no delete-all and
+  no reorder**. Delete one rule at a time, by id, after listing it to the user.
+- **Merchant rename**: `rename_merchant(merchant_id, new_name=...)`, or
+  `rename_merchant(merchant_id, target_merchant_id=...)` to rename a duplicate
+  to another merchant's exact name (e.g. folding "Third Federal Savings & Loan
+  Association" into "Third Federal Savings & Loan"). IDs only. Look both
+  merchants up (`get_merchant(id)`) and show the user their names and
+  transaction counts first; never pick a target by fuzzy name match. Whether
+  Monarch *merges* the two merchants' history on a same-name rename is
+  server behaviour the skill has not verified. Tell the user to check the
+  result in the app.
+- **Recurring streams**: `mark_stream_as_not_recurring(stream_id)` (removes a
+  duplicate/obsolete stream) and `review_recurring_stream(stream_id,
+  "approved"|"ignored"|"pending")`. Act only on a stream id the user
+  identified from the recurring list.
+- **Category rename**: `update_transaction_category(category_id, name=...,
+  icon=..., budget_variability=..., exclude_from_budget=...)`. The library
+  already has create/delete category.
 - The user is finance-sophisticated — skip 101-level explanations; lead with the
   number and the non-obvious caveat.
 - Amounts: positive = inflow/income, negative = outflow/expense.

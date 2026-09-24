@@ -16,6 +16,7 @@ Two public surfaces:
 Nothing here ever prints a password, session token, or MFA secret to stdout.
 """
 import datetime as _dt
+import functools
 import json
 import os
 import re
@@ -36,6 +37,8 @@ from skill_common import (                               # noqa: E402
 from cache_contract import shared_data_dir               # noqa: E402
 # Per-skill schema + version (skill_schema.py is monarch's, not skeleton's).
 from skill_schema import SKILL_VERSION, SCHEMA, V2_DDL, V3_DDL   # noqa: E402,F401
+# Write endpoints the library doesn't wrap, exposed through GuardedMonarch.
+import monarch_writes as _WRITES                         # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -713,7 +716,31 @@ CONFIRM_METHODS = frozenset({
     "update_reoccuring",
     "upload_account_balance_history",
     "upload_attachment",
+    # Not in the pinned library, but newer forks ship it; gate it so an
+    # upgrade can't expose an ungated write.
+    "upload_receipt_to_inbox",
+    # skill-implemented writes (monarch_writes.WRITE_METHODS)
+    "create_transaction_rule",
+    "update_transaction_rule",
+    "delete_transaction_rule",
+    "rename_merchant",
+    "mark_stream_as_not_recurring",
+    "review_recurring_stream",
+    "update_transaction_category",
+    # a raw GraphQL MUTATION (queries through gql_call stay ungated)
+    "gql_call",
 })
+
+
+def _is_mutation(graphql_query):
+    """True if a gql() document (gql 3 DocumentNode or gql 4 GraphQLRequest)
+    contains a mutation operation. Unparseable input counts as a mutation."""
+    doc = getattr(graphql_query, "document", graphql_query)
+    try:
+        return any(getattr(getattr(d, "operation", None), "value", None)
+                   == "mutation" for d in doc.definitions)
+    except AttributeError:
+        return True
 
 
 class _Armed:
@@ -763,6 +790,24 @@ class GuardedMonarch:
             )
         return _Armed(self, name)
 
+    def _require_armed(self, name):
+        if name not in self._armed:
+            raise ConfirmationRequiredError(
+                f"Monarch endpoint '{name}' modifies the user's data. Get the "
+                "user's explicit confirmation of this specific action in the "
+                "conversation first, then wrap the call: "
+                f"with client.mm.allow('{name}'): client.mm.{name}(...)"
+            )
+
+    def gql_call(self, operation, graphql_query, variables=None):
+        """Raw GraphQL passthrough. Queries are free; a mutation needs
+        allow('gql_call') — otherwise any write could skip the gate."""
+        if _is_mutation(graphql_query):
+            self._require_armed("gql_call")
+        return self._mm.gql_call(operation=operation,
+                                 graphql_query=graphql_query,
+                                 variables=variables or {})
+
     def __getattr__(self, name):
         if name in FORBIDDEN_METHODS:
             raise BlockedEndpointError(
@@ -770,13 +815,13 @@ class GuardedMonarch:
                 "skill never creates or deletes accounts. The user must do "
                 "this in the Monarch app directly."
             )
-        if name in CONFIRM_METHODS and name not in self._armed:
-            raise ConfirmationRequiredError(
-                f"Monarch endpoint '{name}' modifies the user's data. Get the "
-                "user's explicit confirmation of this specific action in the "
-                "conversation first, then wrap the call: "
-                f"with client.mm.allow('{name}'): client.mm.{name}(...)"
-            )
+        if name in CONFIRM_METHODS:
+            self._require_armed(name)
+        # Skill-implemented endpoints the library lacks. They run against the
+        # RAW client, so their internal gql_call is not double-gated.
+        impl = _WRITES.WRITE_METHODS.get(name) or _WRITES.READ_METHODS.get(name)
+        if impl is not None:
+            return functools.partial(impl, self._mm)
         return getattr(self._mm, name)
 
 

@@ -78,6 +78,48 @@ Authentication is a saved-session pickle (`mm.load_session(path)`); see
 | `is_accounts_refresh_complete()` | bool refresh status | post-refresh poll |
 | `request_accounts_refresh_and_wait()` | triggers + waits for a provider refresh | force fresh balances |
 
+## Skill-implemented endpoints (`scripts/monarch_writes.py`)
+
+Not wrapped by the library; sent via `gql_call`. Documents match the Monarch
+web app (as captured in github.com/thedavidweng/monarchmoney-cli
+`queries/`). All writes are in `CONFIRM_METHODS`: call as `client.mm.<name>`
+inside `with client.mm.allow("<name>"):`. Each write has a
+`build_<name>(...)` twin returning `WriteRequest(operation, document,
+variables)` without sending.
+
+| Method | GraphQL operation | Variables | Returns |
+|--------|-------------------|-----------|---------|
+| `get_transaction_rules()` (read) | `GetTransactionRules` | — | `transactionRules[]` |
+| `get_merchant(merchant_id)` (read) | `Common_GetEditMerchant` | `merchantId` | `{id, name, transactionCount, ruleCount, …}` |
+| `create_transaction_rule(**rule, apply_to_existing_transactions=False)` | `Common_CreateTransactionRuleMutationV2` | `input: CreateTransactionRuleInput` | new rule id |
+| `update_transaction_rule(rule_id, **changes, apply_to_existing_transactions=False)` | `Common_UpdateTransactionRuleMutationV2` | `input: UpdateTransactionRuleInput` (full current rule + changes + `id`) | rule id |
+| `delete_transaction_rule(rule_id)` | `Common_DeleteTransactionRule` | `id` | `True` (checks `deleted`) |
+| `rename_merchant(merchant_id, new_name=None, target_merchant_id=None)` | `Common_UpdateMerchant` | `input: {merchantId, name}` | updated merchant |
+| `mark_stream_as_not_recurring(stream_id)` | `Common_MarkAsNotRecurring` | `streamId` | `True` (checks `success`) |
+| `review_recurring_stream(stream_id, review_status)` | `Web_ReviewStream` | `input: {streamId, reviewStatus}` | `{id, reviewStatus}` |
+| `update_transaction_category(category_id, name, icon, budget_variability, exclude_from_budget)` | `Web_UpdateCategory` | `input: {id, …changed fields}` | updated category |
+
+Rule input keys (keyword arg → input key): `merchant_criteria` →
+`merchantCriteria` `[{operator: contains|eq, value}]`; `amount_criteria` →
+`amountCriteria` `{operator: gt|eq|between, isExpense, value}` or
+`{…, valueRange: {lower, upper}}` for `between`;
+`merchant_criteria_use_original_statement`; `category_ids`; `account_ids`;
+`set_category_action` (category id); `set_merchant_action` (merchant name);
+`add_tags_action` (tag ids); `set_hide_from_reports_action`;
+`review_status_action`; `send_notification_action`. A rule needs ≥1
+criterion and ≥1 action.
+
+**Error contract:** a mutation fails only if `errors.message` or
+`errors.fieldErrors` is non-empty (`errors` may be null, an object, or a
+list; an empty object is success) → `MonarchWriteError`.
+
+**Not implemented on purpose:** rule delete-all, rule reorder.
+
+`verify_writes.py` (repo root, not shipped) exercises every method against a
+fake server by default; `--live` runs create→check→update→delete on a
+throwaway rule (`zz-test-no-match-123`) and category, cleans up by recorded id,
+and builds-but-never-sends the merchant/recurring writes.
+
 \* `costBasis` is **not guaranteed** — Monarch omits it for many positions
 (manual accounts, certain custodians). Treat as nullable. See "Lot-level
 limitation".

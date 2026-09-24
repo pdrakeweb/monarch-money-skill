@@ -87,6 +87,9 @@ down here** (editing them only in this repo forks them silently):
 - `monarch-money\scripts\monarch_client.py` — MonarchCache write methods,
   tax-bucket inference, auth flows (token/cookie/credentials/.env),
   GuardedMonarch write policy, error classification
+- `monarch-money\scripts\monarch_writes.py` — write endpoints the library
+  lacks (rules, merchant rename, recurring streams, category rename), exposed
+  and gated through GuardedMonarch; exercised by `verify_writes.py` (repo root)
 - `monarch-money\scripts\fetch.py`, `setup_auth.py`, `SKILL.md`, `references\`
 
 Note: the skeleton sample dir (`my-skill/`), its `cli.py` scaffold, and
