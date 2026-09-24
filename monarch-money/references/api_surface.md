@@ -93,7 +93,7 @@ variables)` without sending.
 | `get_merchant(merchant_id)` (read) | `Common_GetEditMerchant` | `merchantId` | `{id, name, transactionCount, ruleCount, …}` |
 | `create_transaction_rule(**rule, apply_to_existing_transactions=False)` | `Common_CreateTransactionRuleMutationV2` | `input: CreateTransactionRuleInput` | new rule id |
 | `update_transaction_rule(rule_id, **changes, apply_to_existing_transactions=False)` | `Common_UpdateTransactionRuleMutationV2` | `input: UpdateTransactionRuleInput` (full current rule + changes + `id`) | rule id |
-| `delete_transaction_rule(rule_id)` | `Common_DeleteTransactionRule` | `id` | `True` (checks `deleted`) |
+| `delete_transaction_rule(rule_id)` | `Common_DeleteTransactionRule` | `id` | `True` (success = empty `errors`; the `deleted` flag is unreliable and ignored) |
 | `rename_merchant(merchant_id, new_name=None, target_merchant_id=None)` | `Common_UpdateMerchant` | `input: {merchantId, name}` | updated merchant |
 | `mark_stream_as_not_recurring(stream_id)` | `Common_MarkAsNotRecurring` | `streamId` | `True` (checks `success`) |
 | `review_recurring_stream(stream_id, review_status)` | `Web_ReviewStream` | `input: {streamId, reviewStatus}` | `{id, reviewStatus}` |

@@ -175,10 +175,19 @@ def test_delete_rule_by_id():
     assert mm.calls == [("Common_DeleteTransactionRule", {"id": "r1"})]
 
 
-def test_delete_rule_not_deleted_fails():
+def test_delete_rule_ignores_unreliable_deleted_flag():
+    # Live: deleted=False with empty errors, yet the rule was gone.
     mm = FakeMM({"Common_DeleteTransactionRule": {
-        "deleteTransactionRule": {"deleted": False, "errors": None}}})
-    with pytest.raises(W.MonarchWriteError):
+        "deleteTransactionRule": {"deleted": False,
+                                  "errors": {"message": None, "code": None}}}})
+    assert run(W.delete_transaction_rule(mm, "r1"))
+
+
+def test_delete_rule_error_message_fails():
+    mm = FakeMM({"Common_DeleteTransactionRule": {
+        "deleteTransactionRule": {"deleted": False,
+                                  "errors": {"message": "Not found"}}}})
+    with pytest.raises(W.MonarchWriteError, match="Not found"):
         run(W.delete_transaction_rule(mm, "r1"))
 
 

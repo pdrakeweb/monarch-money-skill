@@ -414,10 +414,12 @@ def build_delete_transaction_rule(rule_id):
 
 
 async def delete_transaction_rule(mm, rule_id):
-    """Delete ONE rule by id. There is deliberately no delete-all."""
-    payload = await send(mm, build_delete_transaction_rule(rule_id))
-    if payload.get("deleted") is False:
-        raise MonarchWriteError(f"Monarch did not delete rule {rule_id}.")
+    """Delete ONE rule by id. There is deliberately no delete-all.
+
+    Success is judged by the errors payload alone (send() raises on a
+    non-empty one). The `deleted` flag is unreliable: a live delete returned
+    deleted=False while the rule was in fact gone."""
+    await send(mm, build_delete_transaction_rule(rule_id))
     return True
 
 
