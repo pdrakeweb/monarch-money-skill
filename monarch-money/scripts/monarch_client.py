@@ -278,15 +278,25 @@ class MonarchCache(SkillCache):
 
     # ---- transactions ------------------------------------------------- #
     def write_transactions(self, rows):
-        """INSERT OR IGNORE — incremental-safe, never overwrites or deletes."""
+        """Upsert by id — re-syncing a transaction refreshes it, so pending ->
+        posted and recategorisations in Monarch reach the cache. Idempotent;
+        never deletes (see prune_missing_pending)."""
         now = int(time.time())
         for t in rows:
             tags = t.get("tags", [])
             self._conn.execute(
-                "INSERT OR IGNORE INTO transactions "
+                "INSERT INTO transactions "
                 "(id, account_id, date, amount, merchant, category, category_group, "
                 " tags, notes, is_pending, fetched_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET "
+                "  account_id = excluded.account_id, date = excluded.date, "
+                "  amount = excluded.amount, merchant = excluded.merchant, "
+                "  category = excluded.category, "
+                "  category_group = excluded.category_group, "
+                "  tags = excluded.tags, notes = excluded.notes, "
+                "  is_pending = excluded.is_pending, "
+                "  fetched_at = excluded.fetched_at",
                 (
                     t["id"], t.get("account_id"), t.get("date"), t.get("amount"),
                     t.get("merchant"), t.get("category"), t.get("category_group"),
@@ -295,6 +305,20 @@ class MonarchCache(SkillCache):
                 ),
             )
         self._conn.commit()
+
+    def prune_missing_pending(self, start_date, seen_ids):
+        """Delete pending transactions dated >= start_date whose ids were not
+        in a COMPLETE fetch of that window: they settled under a new id or
+        were dropped upstream. Posted rows are never touched. Returns count."""
+        seen = {i for i in seen_ids if i is not None}
+        rows = self._conn.execute(
+            "SELECT id FROM transactions WHERE is_pending = 1 AND date >= ?",
+            (start_date,)).fetchall()
+        stale = [r[0] for r in rows if r[0] not in seen]
+        self._conn.executemany(
+            "DELETE FROM transactions WHERE id = ?", [(i,) for i in stale])
+        self._conn.commit()
+        return len(stale)
 
     # ---- budgets ------------------------------------------------------ #
     def write_budgets(self, rows, period):
@@ -773,6 +797,7 @@ class MonarchClient:
             mm_instance = GuardedMonarch(mm_instance)
         self.mm = mm_instance
         self.cache = cache
+        self.auth_source = None  # set by ensure_authenticated
 
     @classmethod
     def from_session(cls, session_path=DEFAULT_SESSION_PATH,
@@ -931,26 +956,40 @@ class MonarchClient:
                              cred_path=DEFAULT_CRED_PATH,
                              cache_path=DEFAULT_DB_PATH,
                              cookie_path=DEFAULT_COOKIE_PATH,
-                             env_path=DEFAULT_ENV_PATH):
+                             env_path=DEFAULT_ENV_PATH,
+                             skip_session=False):
         """Try a saved token session, then a saved cookie session, then
         persisted credentials, then the .env file, then the secrets
-        vault; else raise AuthExpiredError. Never retries a dead session."""
+        vault; else raise AuthExpiredError. Never retries a dead session.
+
+        skip_session=True skips the saved session pickle — used once by
+        fetch.py after the server rejected that pickle. The returned client's
+        `auth_source` names the source that succeeded."""
+        def _tagged(client, source):
+            client.auth_source = source
+            return client
+
+        if not skip_session:
+            try:
+                return _tagged(cls.from_session(session_path, cache_path),
+                               "session")
+            except MonarchSkillError:
+                pass
         try:
-            return cls.from_session(session_path, cache_path)
-        except MonarchSkillError:
-            pass
-        try:
-            return cls.from_cookie_session(cookie_path, cache_path)
+            return _tagged(cls.from_cookie_session(cookie_path, cache_path),
+                           "cookie")
         except MonarchSkillError:
             pass
         if os.path.exists(cred_path):
-            return cls.from_credentials(cred_path, cache_path, session_path)
+            return _tagged(cls.from_credentials(cred_path, cache_path,
+                                                session_path), "credentials")
         try:
-            return cls.from_env(env_path, cache_path, session_path)
+            return _tagged(cls.from_env(env_path, cache_path, session_path),
+                           "env")
         except MonarchSkillError:
             pass
         try:
-            return cls.from_vault(cache_path, session_path)
+            return _tagged(cls.from_vault(cache_path, session_path), "vault")
         except MonarchSkillError:
             pass
         raise AuthExpiredError(

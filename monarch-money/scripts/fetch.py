@@ -29,7 +29,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from monarch_client import (  # noqa: E402
-    MonarchCache, MonarchClient, MonarchSkillError, classify_error,
+    MonarchCache, MonarchClient, MonarchSkillError, AuthExpiredError,
+    classify_error,
     SKILL_VERSION,
     DEFAULT_DB_PATH, DEFAULT_SESSION_PATH, DEFAULT_CRED_PATH,
     DEFAULT_COOKIE_PATH, DEFAULT_DATA_DIR,
@@ -331,6 +332,10 @@ def sync_transactions(ctx):
             if len(batch) < page:
                 break
             offset += page
+        # A pending row that settled under a new id (or was dropped upstream)
+        # won't come back; clear stale pendings from the window just fetched.
+        cache.prune_missing_pending(start.isoformat(),
+                                    [t.get("id") for t in raw])
         # Remember the earliest window boundary we've fetched.
         new_earliest = start.isoformat()
         if earliest:
@@ -346,21 +351,41 @@ def sync_transactions(ctx):
 
 def sync_budgets(ctx, period):
     cache = ctx.cache
-    if not _need_sync(cache, "budgets", TTL_4H, ctx.refresh):
-        return period, False
     if ctx.mock:
+        if not _need_sync(cache, "budgets", TTL_4H, ctx.refresh):
+            return period, False
         data = load_fixture(ctx.fixtures_dir, "budgets")
         period = data.get("period", period)
         rows = [normalize_budget(b) for b in data.get("categories", [])]
     else:
-        data = asyncio.run(ctx.client.mm.get_budgets())
-        rows = [normalize_budget(b) for b in _extract_budget_rows(data)]
+        # Freshness is per period: a fresh current month must not block a
+        # request for another month.
+        if not ctx.refresh and cache.is_fresh("budgets", "period", period, TTL_4H):
+            return period, False
+        # Ask for exactly this month. With no dates the library's window starts
+        # LAST month, so monthlyAmounts[0] was last month's numbers.
+        start, end = _month_bounds(period)
+        data = asyncio.run(ctx.client.mm.get_budgets(
+            start_date=start, end_date=end))
+        rows = [normalize_budget(b) for b in _extract_budget_rows(data, period)]
     cache.write_budgets(rows, period)
     cache.increment_api_calls()
     return period, True
 
 
-def _extract_budget_rows(data):
+def _month_amounts(monthly, period):
+    """The monthlyAmounts entry for `period` (YYYY-MM). Falls back to the sole
+    entry when the response carries no month labels; never guesses among
+    several."""
+    monthly = monthly or []
+    if period:
+        for m in monthly:
+            if str(m.get("month") or "").startswith(period):
+                return m
+    return monthly[0] if len(monthly) == 1 else {}
+
+
+def _extract_budget_rows(data, period=None):
     # Live shape (QA-verified): category nodes under monthlyAmountsByCategory
     # carry only {id, __typename}; the names live under
     # categoryGroups[].categories[]. Build id -> (name, group) first.
@@ -374,7 +399,7 @@ def _extract_budget_rows(data):
         for item in data.get("budgetData", {}).get("monthlyAmountsByCategory", []):
             cid = (item.get("category") or {}).get("id")
             nm, grp = name_by_id.get(cid, (None, None))
-            amts = (item.get("monthlyAmounts") or [{}])[0]
+            amts = _month_amounts(item.get("monthlyAmounts"), period)
             out.append({
                 "categoryId": cid, "category": nm, "categoryGroup": grp,
                 "budgeted": amts.get("plannedCashFlowAmount"),
@@ -402,23 +427,53 @@ def _shift_month(period, delta):
     return f"{total // 12:04d}-{total % 12 + 1:02d}"
 
 
-def sync_cashflow(ctx, months):
-    cache = ctx.cache
-    if not _need_sync(cache, "cashflow", TTL_4H, ctx.refresh):
+# Days after month end before a month's cashflow is treated as final (late
+# posts and recategorisations settle in the first days of the next month).
+CASHFLOW_SETTLE_DAYS = 7
+
+
+def _cashflow_fresh(cache, period, today):
+    """A closed month is final once it was fetched CASHFLOW_SETTLE_DAYS after
+    it ended. Anything fetched earlier (including mid-month, while it was the
+    current month) is partial and follows the normal 4h TTL."""
+    row = cache._conn.execute(
+        "SELECT fetched_at FROM cashflow WHERE period = ?", (period,)
+    ).fetchone()
+    if not row or row[0] is None:
         return False
+    _, last_day = _month_bounds(period)
+    settled = _dt.date.fromisoformat(last_day) + _dt.timedelta(
+        days=CASHFLOW_SETTLE_DAYS)
+    if today > settled:
+        settled_ts = time.mktime(settled.timetuple())
+        if row[0] >= settled_ts:
+            return True
+    return (time.time() - row[0]) < TTL_4H
+
+
+def sync_cashflow(ctx, months, month=None):
+    cache = ctx.cache
     if ctx.mock:
+        if not _need_sync(cache, "cashflow", TTL_4H, ctx.refresh):
+            return False
         data = load_fixture(ctx.fixtures_dir, "cashflow")
         for cf in data:
             cache.write_cashflow(cf, cf["period"])
         cache.increment_api_calls()
         return True
-    # Live: one summary call per requested month (closed months only refresh
-    # when missing — they never change).
-    current = _today().strftime("%Y-%m")
-    for delta in range(-(months - 1), 1):
-        period = _shift_month(current, delta)
-        if period != current and cache.is_fresh("cashflow", "period", period, 10**12):
-            continue  # closed month already cached — permanent
+    # Live: one summary call per requested month. Freshness is per month, so a
+    # wider --months or a specific --month still fetches what's missing.
+    today = _today()
+    current = today.strftime("%Y-%m")
+    if month:
+        periods = [month]
+    else:
+        periods = [_shift_month(current, d) for d in range(-(months - 1), 1)]
+    wrote = False
+    for period in periods:
+        if not ctx.refresh and _cashflow_fresh(cache, period, today):
+            continue
+        wrote = True
         start, end = _month_bounds(period)
         summary = asyncio.run(ctx.client.mm.get_cashflow_summary(
             start_date=start, end_date=end))
@@ -432,7 +487,7 @@ def sync_cashflow(ctx, months):
             {"income": income, "expense": expense, "savings": savings,
              "savings_rate": rate, "by_category": {}, "by_group": {}}, period)
         cache.increment_api_calls()
-    return True
+    return wrote
 
 
 def sync_recurring(ctx):
@@ -499,8 +554,9 @@ def render_holdings(cache):
             no_basis += 1
         else:
             pl = money((value or 0) - basis)
+        qty_s = "—" if qty is None else f"{qty:g}"
         print(f"| {acct_name or acct_id} | {ticker} | {hname or ''} | "
-              f"{qty:g} | {money(value)} | {pl} |")
+              f"{qty_s} | {money(value)} | {pl} |")
     print(f"\n**Total Portfolio: {money(total)}**")
     # Top 5 by value
     top = rows[:5]
@@ -1019,7 +1075,7 @@ def dispatch(args, cache, client):
         render_budgets(cache, period, getattr(args, "include_excluded", False))
     elif cmd == "cashflow":
         n_months = max(args.months, 1)
-        sync_cashflow(ctx, n_months)
+        sync_cashflow(ctx, n_months, month=args.month)
         render_cashflow(cache, n_months, month=args.month,
                         include_excluded=getattr(args, "include_excluded", False))
     elif cmd == "recurring":
@@ -1181,11 +1237,29 @@ def main(argv=None):
     try:
         if args.command in NO_AUTH or args.mock:
             cache = MonarchCache(args.db)
-        else:
+            return dispatch(args, cache, client)
+        client = MonarchClient.ensure_authenticated(
+            args.session_path, args.cred_path, args.db, args.cookie_path)
+        cache = client.cache
+        try:
+            return dispatch(args, cache, client)
+        except Exception as exc:  # noqa: BLE001 - re-raised unless auth
+            # A saved session pickle loads fine even when the server has
+            # expired it, so it would shadow .env / vault credentials forever.
+            # Fail over ONCE to the other sources (never re-try the dead
+            # session itself); syncs are idempotent, so re-dispatch is safe.
+            if client.auth_source != "session" or not isinstance(
+                    classify_error(exc), AuthExpiredError):
+                raise
+            cache.close()
+            cache = None
             client = MonarchClient.ensure_authenticated(
-                args.session_path, args.cred_path, args.db, args.cookie_path)
+                args.session_path, args.cred_path, args.db, args.cookie_path,
+                skip_session=True)
             cache = client.cache
-        return dispatch(args, cache, client)
+            print(f"[monarch] saved session expired; re-authenticated via "
+                  f"{client.auth_source}", file=sys.stderr)
+            return dispatch(args, cache, client)
     except MonarchSkillError as exc:
         print(json.dumps({"error": type(exc).__name__, "message": str(exc)}))
         return 1

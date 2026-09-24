@@ -1,6 +1,6 @@
 ---
 name: "monarch-money"
-version: "1.4.2"
+version: "1.4.3"
 description: >
   Connect to and sync the user's Monarch Money account into a local cache:
   authentication/login, accounts and balances, investment holdings,
@@ -136,7 +136,9 @@ also falls back to the **secrets** vault: if it's installed and holds a
 `secret_provider` contract — never printed) and authenticates. This lets the
 credential live in ONE vault instead of being bundled into this skill, so you
 can ship monarch WITHOUT `-IncludeAuth`. Order: saved session → cookie session
-→ credentials → `.env` → vault.
+→ credentials → `.env` → vault. If the server rejects the saved session
+mid-command, fetch.py fails over ONCE to the remaining sources (a stale
+`session.pickle` no longer shadows a working `.env` / vault secret).
 
 The **same cloud reset hits user config** the API can't regenerate —
 exclusions and tax-bucket corrections (and the shared `profile.json`). Synced
